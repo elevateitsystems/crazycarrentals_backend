@@ -1,0 +1,137 @@
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+enum Role {
+    USER
+    ADMIN
+    SUPER_ADMIN
+}
+
+model User {
+    id           String  @id @default(cuid())
+    name         String
+    email        String  @unique
+    passwordHash String
+    role         Role    @default(USER)
+    phoneNumber  String?
+    avatarUrl    String?
+
+    isEmailVerified Boolean   @default(false)
+    emailVerifiedAt DateTime?
+    lastLoginAt     DateTime?
+    loginAttempts   Int       @default(0)
+    lockedUntil     DateTime?
+    address         String?
+
+    // forgetpassword
+    otp          Int?
+    otpExpiresAt DateTime?
+
+    createdAt DateTime  @default(now())
+    updatedAt DateTime  @updatedAt
+    reviews   Review[]
+    bookings  Booking[]
+
+    @@index([createdAt])
+}
+
+enum CarType {
+    SEDAN
+    SUVs
+    HATCHBACK
+    LUXURY
+    COMPACT_CARS
+    ELECTRIC_CARS
+    PREMIUM_SUV
+    COMMERCIAL
+}
+
+enum TransmissionType {
+    MANUAL
+    AUTOMATIC
+}
+
+enum FuelType {
+    PETROL
+    DIESEL
+    ELECTRIC
+    CNG
+    LPG
+    HYBRID
+}
+
+model Car {
+    id          String @id @default(cuid())
+    brand       String
+    model       String
+    year        Int
+    color       String
+    plate       String @unique
+    pricePerDay Float
+
+    // car features
+    totalSeat Int
+    Doors     Int
+    mileage   String
+
+    // car specs
+    fuelType     FuelType
+    transmission TransmissionType
+    carType      CarType
+
+    images   String[]
+    videoUrl String?
+
+    features      String[]
+    safetyRatings String[]
+
+    description String
+    isAvailable Boolean @default(true)
+
+    // timestamps
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    reviews  Review[]
+    bookings Booking[]
+}
+
+model Review {
+    id        String   @id @default(cuid())
+    carId     String
+    userId    String
+    rating    Int
+    comment   String
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    car  Car  @relation(fields: [carId], references: [id])
+    user User @relation(fields: [userId], references: [id])
+}
+
+model Booking {
+    id         String        @id @default(cuid())
+    carId      String
+    userId     String
+    startDate  DateTime
+    endDate    DateTime
+    totalPrice Float
+    status     BookingStatus @default(PENDING)
+    createdAt  DateTime      @default(now())
+    updatedAt  DateTime      @updatedAt
+
+    car  Car  @relation(fields: [carId], references: [id])
+    user User @relation(fields: [userId], references: [id])
+}
+
+enum BookingStatus {
+    PENDING
+    CONFIRMED
+    CANCELLED
+}
