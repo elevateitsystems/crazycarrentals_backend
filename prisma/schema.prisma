@@ -33,10 +33,10 @@ model User {
     otp          Int?
     otpExpiresAt DateTime?
 
-    createdAt DateTime  @default(now())
-    updatedAt DateTime  @updatedAt
+    createdAt DateTime   @default(now())
+    updatedAt DateTime   @updatedAt
     reviews   Review[]
-    bookings  Booking[]
+    bookings  Bookings[]
 
     @@index([createdAt])
 }
@@ -98,8 +98,11 @@ model Car {
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
 
-    reviews  Review[]
-    bookings Booking[]
+    reviews           Review[]
+    bookings          Bookings[]
+    carAvailabilities CarAvailability[]
+    driverInfo        DriverInfo?       @relation(fields: [driverInfoId], references: [id])
+    driverInfoId      String?
 }
 
 model Review {
@@ -115,23 +118,143 @@ model Review {
     user User @relation(fields: [userId], references: [id])
 }
 
-model Booking {
-    id         String        @id @default(cuid())
-    carId      String
-    userId     String
-    startDate  DateTime
-    endDate    DateTime
-    totalPrice Float
-    status     BookingStatus @default(PENDING)
-    createdAt  DateTime      @default(now())
-    updatedAt  DateTime      @updatedAt
-
-    car  Car  @relation(fields: [carId], references: [id])
-    user User @relation(fields: [userId], references: [id])
-}
-
 enum BookingStatus {
     PENDING
     CONFIRMED
     CANCELLED
+}
+
+enum CarAvailabilityStatus {
+    AVAILABLE
+    BOOKED
+    MAINTENANCE
+}
+
+model CarAvailability {
+    id    String @id @default(cuid())
+    carId String
+
+    pickupDate     DateTime
+    pickupTime     String
+    pickupLocation String
+
+    returnDate     DateTime
+    returnTime     String
+    returnLocation String
+
+    status CarAvailabilityStatus @default(AVAILABLE)
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    car Car @relation(fields: [carId], references: [id])
+}
+
+model Bookings {
+    id String @id @default(cuid())
+
+    carId  String
+    userId String
+
+    pickupDate     DateTime
+    pickupTime     String
+    pickupLocation String
+
+    returnDate     DateTime
+    returnTime     String
+    returnLocation String
+
+    // payment
+    totalPrice Float
+    status     BookingStatus @default(PENDING)
+
+    // timestamps
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    car  Car  @relation(fields: [carId], references: [id])
+    user User @relation(fields: [userId], references: [id])
+
+    extraServices        ExtraService[]
+    bookingPersonDetails BookingPersonDetails[]
+    airportShuttles      AirportShuttle[]
+    payments             Payment[]
+}
+
+model ExtraService {
+    id          String @id @default(cuid())
+    name        String
+    pricePerDay Float
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    bookings Bookings[]
+}
+
+model BookingPersonDetails {
+    id        String @id @default(cuid())
+    bookingId String
+
+    firstName   String
+    lastName    String
+    phoneNumber String
+    email       String
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    booking Bookings @relation(fields: [bookingId], references: [id])
+}
+
+model AirportShuttle {
+    id             String  @id @default(cuid())
+    bookingId      String
+    shuttleService Boolean @default(false)
+
+    price Float @default(0)
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    booking Bookings @relation(fields: [bookingId], references: [id])
+}
+
+model DriverInfo {
+    id String @id @default(cuid())
+
+    name        String
+    phoneNumber String
+    email       String
+    dateOfBirth DateTime
+    age         Int
+
+    licenseNumber String
+    licenseState  String
+    licenseExpiry DateTime
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+    cars      Car[]
+}
+
+model Payment {
+    id        String @id @default(cuid())
+    bookingId String
+
+    paymentOption paymentOption
+
+    paymentMethod String
+    status        String
+    amount        Float
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    booking Bookings @relation(fields: [bookingId], references: [id])
+}
+
+enum paymentOption {
+    PAY_NOW
+    PAY_AT_DESK
 }
