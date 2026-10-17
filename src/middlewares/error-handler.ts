@@ -1,4 +1,5 @@
 
+import multer from 'multer';
 import type { ErrorRequestHandler } from 'express';
 import { Prisma } from '@prisma/client';
 import { AppError } from '../utils/app-error.js';
@@ -14,6 +15,14 @@ export const errorHandler: ErrorRequestHandler = (
     res.status(error.statusCode).json({
       success: false,
       message: error.message,
+    });
+    return;
+  }
+
+  if (error instanceof multer.MulterError) {
+    res.status(400).json({
+      success: false,
+      message: `File upload error: ${error.message}`,
     });
     return;
   }
