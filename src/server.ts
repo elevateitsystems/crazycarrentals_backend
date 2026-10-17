@@ -2,9 +2,11 @@
 import app from './app.js';
 import { env } from './config/env.js';
 import { prisma } from './config/prisma.js';
+import { initMinioBucket } from './config/minio.js';
 
 const startServer = async () => {
   await prisma.$connect();
+  await initMinioBucket();
 
   const server = app.listen(env.PORT, '0.0.0.0', () => {
     console.log(`API running at http://localhost:${env.PORT}`);
