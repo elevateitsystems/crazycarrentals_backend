@@ -152,7 +152,8 @@ model CarAvailability {
 }
 
 model Bookings {
-    id String @id @default(cuid())
+    id               String  @id @default(cuid())
+    bookingReference String? @unique
 
     carId  String
     userId String
@@ -165,6 +166,11 @@ model Bookings {
     returnTime     String
     returnLocation String
 
+    rentalDays  Int?
+    basePrice   Float?
+    extrasPrice Float?
+    discount    Float? @default(0)
+
     // payment
     totalPrice Float
     status     BookingStatus @default(PENDING)
@@ -175,6 +181,9 @@ model Bookings {
 
     car  Car  @relation(fields: [carId], references: [id])
     user User @relation(fields: [userId], references: [id])
+
+    driverInfoId String?
+    driverInfo   DriverInfo? @relation(fields: [driverInfoId], references: [id])
 
     extraServices        ExtraService[]
     bookingPersonDetails BookingPersonDetails[]
@@ -224,19 +233,19 @@ model AirportShuttle {
 model DriverInfo {
     id String @id @default(cuid())
 
-    name        String
-    phoneNumber String
-    email       String
-    dateOfBirth DateTime
-    age         Int
-
+    name          String?
+    phoneNumber   String?
+    email         String?
+    dateOfBirth   DateTime
+    age           Int
     licenseNumber String
     licenseState  String
     licenseExpiry DateTime
 
-    createdAt DateTime @default(now())
-    updatedAt DateTime @updatedAt
+    createdAt DateTime   @default(now())
+    updatedAt DateTime   @updatedAt
     cars      Car[]
+    bookings  Bookings[]
 }
 
 model Payment {
@@ -249,6 +258,14 @@ model Payment {
     status        String
     amount        Float
 
+    transactionId   String?
+    cardLast4       String?
+    cardBrand       String?
+    billingStreet   String?
+    billingSuburb   String?
+    billingState    String?
+    billingPostcode String?
+
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
 
@@ -259,3 +276,4 @@ enum paymentOption {
     PAY_NOW
     PAY_AT_DESK
 }
+
