@@ -42,3 +42,21 @@ export const authenticate: RequestHandler = (req, res, next) => {
     });
   }
 };
+
+export const optionalAuthenticate: RequestHandler = (req, _res, next) => {
+  const authorization = req.headers.authorization;
+  const [scheme, token] = authorization?.split(" ") ?? [];
+
+  if (scheme === "Bearer" && token) {
+    try {
+      const payload = jwt.verify(token, env.JWT_SECRET);
+      if (typeof payload !== "string" && typeof payload.sub === "string") {
+        req.userId = payload.sub;
+      }
+    } catch {
+      // Ignore invalid token in optional auth
+    }
+  }
+  next();
+};
+
