@@ -34,37 +34,19 @@ export const createBookingSchema = z.object({
   }),
   airportShuttle: z.boolean().optional().default(false),
 
-  // Step 4: Driver Information (Optional - defaults to the car's assigned driver)
-  driverInfo: z
-    .object({
-      name: z.string().optional(),
-      phoneNumber: z.string().optional(),
-      email: z.string().email().optional(),
-      dateOfBirth: z.string().optional(),
-      age: z
-        .union([z.number(), z.string()])
-        .optional()
-        .transform((val) => {
-          if (val === undefined || val === null || val === "") return undefined;
-          const parsed = parseInt(String(val).replace(/\+/g, ""), 10);
-          return Number.isNaN(parsed) ? undefined : parsed;
-        }),
-      licenseState: z.string().optional(),
-      licenseNumber: z.string().optional(),
-      licenseExpiry: z.string().optional(),
-    })
-    .optional(),
+  // Step 4 shows the driver already assigned to the car. Do not send a licence.
 
-  // Step 5: Payment Details
+  // Step 5: Payment. Card number and CVV are not stored.
   payment: z.object({
     paymentOption: z.enum(["PAY_NOW", "PAY_AT_DESK"]),
-    paymentMethod: z.string().optional().default("Credit Card"),
+    paymentMethod: z.enum(["Credit Card", "Debit Card"]).optional().default("Credit Card"),
+    stripePaymentIntentId: z.string().trim().min(1).optional(),
     cardDetails: z
       .object({
-        cardNumber: z.string().optional(),
-        nameOnCard: z.string().optional(),
-        expiryDate: z.string().optional(),
-        cvv: z.string().optional(),
+        cardLast4: z.string().regex(/^\d{4}$/).optional(),
+        cardBrand: z.string().trim().max(20).optional(),
+        cardNumber: z.string().trim().optional(),
+        nameOnCard: z.string().trim().optional(),
       })
       .optional(),
     billingAddress: z
@@ -78,6 +60,18 @@ export const createBookingSchema = z.object({
   }),
 });
 
-export const cancelBookingSchema = z.object({
-  reason: z.string().optional(),
-});
+const optionalBody = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((value) => (value == null ? {} : value), schema);
+
+export const confirmPaymentSchema = optionalBody(
+  z.object({
+    email: z.string().trim().email().optional(),
+    stripePaymentIntentId: z.string().trim().min(1).optional(),
+  }),
+);
+
+export const cancelBookingSchema = optionalBody(
+  z.object({
+    reason: z.string().optional(),
+  }),
+);

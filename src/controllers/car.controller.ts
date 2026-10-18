@@ -1,5 +1,6 @@
 import type { RequestHandler } from 'express';
 import * as carService from '../services/car.service.js';
+import * as driverService from '../services/driver.service.js';
 
 export const addNewCar: RequestHandler = async (req, res, next) => {
   try {
@@ -74,6 +75,25 @@ export const updateCarById: RequestHandler = async (req, res, next) => {
     }
 };
 
+
+export const assignDriver: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await driverService.assignDriverToCar(
+      req.params.id as string,
+      req.body.driverId,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: req.body.driverId
+        ? 'Driver assigned to car'
+        : 'Driver removed from car',
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const deleteCarById: RequestHandler = async (req, res, next) => {
     try{
