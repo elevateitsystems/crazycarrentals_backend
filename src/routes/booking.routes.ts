@@ -1,14 +1,18 @@
 import { Router } from "express";
+import adminBookingRoutes from "./booking.admin.routes.js";
 import * as bookingController from "../controllers/booking.controller.js";
 import { authenticate, optionalAuthenticate } from "../middlewares/authenticate.js";
 import { validate } from "../middlewares/validate.js";
 import {
   createBookingSchema,
   estimateBookingSchema,
+  confirmPaymentSchema,
   cancelBookingSchema,
 } from "../validators/booking.validator.js";
 
 const router = Router();
+
+router.use("/admin", adminBookingRoutes);
 
 // 1. Get available extras and pricing rules
 router.get("/extras", bookingController.getExtras);
@@ -32,9 +36,17 @@ router.post(
 router.get("/my-bookings", authenticate, bookingController.getMyBookings);
 
 // 5. Get a specific booking by ID or Reference
-router.get("/:id", optionalAuthenticate, bookingController.getBooking);
+router.get("/my-bookings/:id", optionalAuthenticate, bookingController.getBooking);
 
-// 6. Cancel a booking
+// 6. Mark a Pay Now booking active after payment succeeds
+router.post(
+  "/:id/confirm-payment",
+  optionalAuthenticate,
+  validate(confirmPaymentSchema),
+  bookingController.confirmPayment
+);
+
+// 7. Cancel a booking
 router.post(
   "/:id/cancel",
   optionalAuthenticate,

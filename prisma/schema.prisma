@@ -122,6 +122,7 @@ model Review {
 enum BookingStatus {
     PENDING
     CONFIRMED
+    COMPLETED
     CANCELLED
 }
 
@@ -175,6 +176,10 @@ model Bookings {
     totalPrice Float
     status     BookingStatus @default(PENDING)
 
+    // Pay Now bookings stay PENDING until payment succeeds.
+    // The car is held until this time, then the hold is released.
+    holdExpiresAt DateTime?
+
     // timestamps
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
@@ -187,6 +192,7 @@ model Bookings {
 
     extraServices        ExtraService[]
     bookingPersonDetails BookingPersonDetails[]
+    bookingDriverDetails BookingDriverDetails?
     airportShuttles      AirportShuttle[]
     payments             Payment[]
 }
@@ -215,6 +221,22 @@ model BookingPersonDetails {
     updatedAt DateTime @updatedAt
 
     booking Bookings @relation(fields: [bookingId], references: [id])
+}
+
+model BookingDriverDetails {
+    id        String @id @default(cuid())
+    bookingId String @unique
+
+    dateOfBirth   DateTime
+    age           Int
+    licenseState  String
+    licenseNumber String
+    licenseExpiry DateTime
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    booking Bookings @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 }
 
 model AirportShuttle {
@@ -258,8 +280,9 @@ model Payment {
     status        String
     amount        Float
 
-    transactionId   String?
-    cardLast4       String?
+    transactionId         String?
+    stripePaymentIntentId String?
+    cardLast4             String?
     cardBrand       String?
     billingStreet   String?
     billingSuburb   String?

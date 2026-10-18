@@ -2,6 +2,7 @@ import type { Request } from "express";
 import { prisma } from "../config/prisma.js";
 import { AppError } from "../utils/app-error.js";
 import { uploadFilesToMinio, deleteFileFromMinio } from "./minio.service.js";
+import { formatPublicDriverInfo } from "./driver.service.js";
 import {
   CarType,
   TransmissionType,
@@ -276,9 +277,18 @@ export const getAllCars = async (filters: CarQueryFilters = {}) => {
       andConditions.push({
         bookings: {
           none: {
-            status: { in: ["CONFIRMED", "PENDING"] },
             pickupDate: { lte: rDate },
             returnDate: { gte: pDate },
+            OR: [
+              { status: "CONFIRMED" },
+              {
+                status: "PENDING",
+                OR: [
+                  { holdExpiresAt: null },
+                  { holdExpiresAt: { gt: new Date() } },
+                ],
+              },
+            ],
           },
         },
       });
@@ -372,7 +382,10 @@ export const getAllCars = async (filters: CarQueryFilters = {}) => {
   const totalPages = Math.ceil(total / limit);
 
   return {
-    cars,
+    cars: cars.map((car) => ({
+      ...car,
+      driverInfo: formatPublicDriverInfo(car.driverInfo),
+    })),
     pagination: {
       total,
       page,
@@ -405,11 +418,34 @@ export const searchCars = async (filters: CarQueryFilters = {}) => {
 };
 
 export const getCarById = async (id: string) => {
+  const now = new Date();
   const car = await prisma.car.findUnique({
     where: { id },
     include: {
       reviews: true,
       carAvailabilities: true,
+      driverInfo: true,
+      bookings: {
+        where: {
+          OR: [
+            { status: "CONFIRMED" },
+            {
+              status: "PENDING",
+              OR: [{ holdExpiresAt: null }, { holdExpiresAt: { gt: now } }],
+            },
+          ],
+        },
+        select: {
+          status: true,
+          pickupDate: true,
+          pickupTime: true,
+          returnDate: true,
+          returnTime: true,
+          pickupLocation: true,
+          returnLocation: true,
+        },
+        orderBy: { pickupDate: "asc" },
+      },
     },
   });
 
@@ -417,7 +453,21 @@ export const getCarById = async (id: string) => {
     throw new AppError(404, "Car not found");
   }
 
-  return car;
+  const { bookings, ...carData } = car;
+
+  return {
+    ...carData,
+    driverInfo: formatPublicDriverInfo(car.driverInfo),
+    bookedDates: bookings.map((booking) => ({
+      status: booking.status,
+      pickupDate: booking.pickupDate,
+      pickupTime: booking.pickupTime,
+      pickupLocation: booking.pickupLocation,
+      returnDate: booking.returnDate,
+      returnTime: booking.returnTime,
+      returnLocation: booking.returnLocation,
+    })),
+  };
 };
 
 
