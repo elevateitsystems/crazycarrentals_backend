@@ -20,7 +20,10 @@ const envSchema = z.object({
   MINIO_SECRET_KEY: z.string().default('minioadmin'),
   MINIO_BUCKET_NAME: z.string().default('crazycarrentals'),
   MINIO_PUBLIC_URL: z.string().optional(),
-  
+
+  STRIPE_SECRET_KEY: z.string().min(1),
+  STRIPE_WEBHOOK_SECRET: z.string().min(1),
+  STRIPE_PUBLISHABLE_KEY: z.string().min(1).optional(),
 });
 
 export const env = envSchema.parse(process.env);

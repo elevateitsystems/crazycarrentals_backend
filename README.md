@@ -28,6 +28,10 @@ DATABASE_URL="postgresql://postgres:postgres@localhost:5432/crazycarrentals_DB?s
 JWT_SECRET=replace-with-a-secret-at-least-32-characters
 JWT_EXPIRES_IN=1d
 
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_PUBLISHABLE_KEY=pk_test_...
+
 MINIO_ENDPOINT=localhost
 MINIO_PORT=9000
 MINIO_USE_SSL=false
@@ -91,7 +95,7 @@ Roles are `USER`, `ADMIN`, and `SUPER_ADMIN`. Admin routes accept `ADMIN` or `SU
 
 1. Pick a car, dates, extras, and renter contact.
 2. The driver shown on the booking is the driver assigned to that car. The renter does not enter a licence. A car with no assigned driver cannot be booked.
-3. **Pay now** saves the booking as `PENDING` and holds the car for about 30 minutes. Call confirm-payment to make it `CONFIRMED`. Pay now includes a 5% discount. Card charging is not implemented yet.
+3. **Pay now** saves the booking as `PENDING`, holds the car for about 30 minutes, and returns a Stripe `clientSecret`. The website confirms the card with Stripe.js. The booking becomes `CONFIRMED` only after Stripe reports `payment_intent.succeeded`. Pay now includes a 5% discount. The price is charged in AUD.
 4. **Pay at desk** confirms the booking immediately. The payment stays `PENDING_AT_DESK` until an admin collects it.
 5. A confirmed booking becomes `COMPLETED` after its return date and time, or when an admin marks it complete. `isActive` is true only while the status is `CONFIRMED`.
 
@@ -171,7 +175,7 @@ Responses include the public MinIO URL.
 | `POST` | `/` | Public. Logged-in user is attached when a token is sent |
 | `GET` | `/my-bookings` | Logged in |
 | `GET` | `/my-bookings/:id` | Booking id or reference. Guest may pass `?email=` |
-| `POST` | `/:id/confirm-payment` | Activates a pending pay-now booking. Empty body is allowed |
+| `POST` | `/:id/confirm-payment` | Activates a pay-now booking after Stripe has succeeded. Empty body is allowed |
 | `POST` | `/:id/cancel` | Empty body is allowed. Optional `{ "reason" }` |
 
 `:id` accepts the booking id or the booking reference.
@@ -189,6 +193,15 @@ Requires an admin token.
 | `POST` | `/complete/:id` | Mark a confirmed booking completed |
 | `POST` | `/collect-payment/:id` | Mark a pay-at-desk payment collected |
 | `POST` | `/cancel/:id` | Cancel a booking |
+
+### Payments — `/api/payments`
+
+| Method | Path | Access |
+|--------|------|--------|
+| `GET` | `/config` | Public. Returns the Stripe publishable key |
+| `POST` | `/webhook` | Stripe only. Handles `payment_intent.succeeded` and `payment_intent.payment_failed` |
+
+A pay-now create response includes `clientSecret`. Use that with the publishable key in Stripe.js. Do not send card numbers to this API.
 
 ### Dashboard — `/api/admin`
 

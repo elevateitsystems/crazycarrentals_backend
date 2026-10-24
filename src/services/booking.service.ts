@@ -1,7 +1,16 @@
 import bcrypt from "bcryptjs";
 import type { BookingStatus, Prisma } from "@prisma/client";
+import type Stripe from "stripe";
 import { prisma } from "../config/prisma.js";
 import { formatPublicDriverInfo } from "./driver.service.js";
+import {
+  cancelOpenCardPayment,
+  constructStripeEvent,
+  createCardPayment,
+  refundCardPayment,
+  requireSucceededCardPayment,
+  toCents,
+} from "./payment.service.js";
 
 export interface EstimateBookingInput {
   carId: string;
@@ -409,7 +418,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
     input.returnTime
   );
 
-  return await prisma.$transaction(async (tx) => {
+  const created = await prisma.$transaction(async (tx) => {
     await releaseExpiredHolds(tx, input.carId);
     await completeElapsedBookings();
 
@@ -556,10 +565,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
       });
     }
 
-    const rawCard = input.payment.cardDetails?.cardNumber?.replace(/\s+/g, "");
-    const cardLast4 =
-      input.payment.cardDetails?.cardLast4 ??
-      (rawCard && rawCard.length >= 4 ? rawCard.slice(-4) : null);
+    const cardLast4 = input.payment.cardDetails?.cardLast4 ?? null;
 
     await tx.payment.create({
       data: {
@@ -569,7 +575,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
         status: isPayNow ? "PENDING" : "PENDING_AT_DESK",
         amount: totalPrice,
         transactionId: isPayNow ? null : `desk_${Date.now()}`,
-        stripePaymentIntentId: input.payment.stripePaymentIntentId ?? null,
+        stripePaymentIntentId: null,
         cardLast4,
         cardBrand: input.payment.cardDetails?.cardBrand ?? null,
         billingStreet: input.payment.billingAddress?.street || null,
@@ -610,8 +616,43 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
       throw new Error("Failed to create booking");
     }
 
-    return presentBooking(created);
+    return created;
   });
+
+  const presented = presentBooking(created);
+  if (input.payment.paymentOption !== "PAY_NOW") {
+    return presented;
+  }
+
+  try {
+    const cardPayment = await createCardPayment({
+      bookingId: created.id,
+      bookingReference: created.bookingReference,
+      amount: created.totalPrice,
+      email: input.bookingPersonDetails.email,
+    });
+
+    await prisma.payment.update({
+      where: { id: created.payments[0].id },
+      data: { stripePaymentIntentId: cardPayment.paymentIntentId },
+    });
+
+    const payments = Array.isArray(presented.payments) ? presented.payments : [];
+
+    return {
+      ...presented,
+      clientSecret: cardPayment.clientSecret,
+      payments: payments.map((payment, index) =>
+        index === 0 && payment && typeof payment === "object"
+          ? { ...payment, stripePaymentIntentId: cardPayment.paymentIntentId }
+          : payment,
+      ),
+    };
+  } catch (error) {
+    await abandonUnpaidBooking(created.id);
+    const message = error instanceof Error ? error.message : "Unable to start card payment";
+    throw new Error(message);
+  }
 };
 
 // 4. Get User's bookings
@@ -630,7 +671,7 @@ export const getUserBookings = async (
     where.status = query.status.toUpperCase();
   }
 
-  const [bookings, total] = await Promise.all([
+  let [bookings, total] = await Promise.all([
     prisma.bookings.findMany({
       where,
       skip,
@@ -663,6 +704,39 @@ export const getUserBookings = async (
     prisma.bookings.count({ where }),
   ]);
 
+  const paidNow = await Promise.all(bookings.map((booking) => syncSucceededPayment(booking)));
+  if (paidNow.some(Boolean)) {
+    bookings = await prisma.bookings.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: { createdAt: "desc" },
+      include: {
+        car: {
+          select: {
+            id: true,
+            brand: true,
+            model: true,
+            year: true,
+            color: true,
+            plate: true,
+            carType: true,
+            transmission: true,
+            fuelType: true,
+            images: true,
+            pricePerDay: true,
+            driverInfo: true,
+          },
+        },
+        payments: true,
+        bookingPersonDetails: true,
+        airportShuttles: true,
+        extraServices: true,
+        driverInfo: true,
+      },
+    });
+  }
+
   return {
     bookings: bookings.map(presentBooking),
     pagination: {
@@ -684,7 +758,7 @@ export const getBookingDetails = async (
 ) => {
   await completeElapsedBookings();
 
-  const booking = await prisma.bookings.findFirst({
+  let booking = await prisma.bookings.findFirst({
     where: {
       OR: [{ id: idOrRef }, { bookingReference: idOrRef }],
     },
@@ -729,7 +803,147 @@ export const getBookingDetails = async (
     }
   }
 
-  return presentBooking(booking);
+  if (await syncSucceededPayment(booking)) {
+    const refreshed = await prisma.bookings.findFirst({
+      where: { id: booking.id },
+      include: {
+        car: { include: { driverInfo: true } },
+        user: { select: { id: true, name: true, email: true } },
+        driverInfo: true,
+        bookingPersonDetails: true,
+        airportShuttles: true,
+        extraServices: true,
+        payments: true,
+      },
+    });
+    if (refreshed) booking = refreshed;
+  }
+
+  const presented = presentBooking(booking);
+  return attachPendingClientSecret(presented, booking.payments);
+};
+
+const abandonUnpaidBooking = async (bookingId: string) => {
+  const booking = await prisma.bookings.findUnique({
+    where: { id: bookingId },
+    include: { payments: true },
+  });
+
+  if (!booking || booking.status !== "PENDING") return;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.bookings.update({
+      where: { id: booking.id },
+      data: { status: "CANCELLED" },
+    });
+
+    const payment = booking.payments[0];
+    if (payment && payment.status === "PENDING") {
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: { status: "EXPIRED" },
+      });
+    }
+
+    await tx.carAvailability.deleteMany({
+      where: {
+        carId: booking.carId,
+        pickupDate: booking.pickupDate,
+        returnDate: booking.returnDate,
+        status: "BOOKED",
+      },
+    });
+  });
+};
+
+const syncSucceededPayment = async (booking: {
+  id: string;
+  status: string;
+  totalPrice: number;
+  payments: Array<{ paymentOption: string; stripePaymentIntentId: string | null }>;
+}) => {
+  if (booking.status !== "PENDING") return false;
+
+  const payment = booking.payments.find(
+    (item) => item.paymentOption === "PAY_NOW" && item.stripePaymentIntentId,
+  );
+  if (!payment?.stripePaymentIntentId) return false;
+
+  try {
+    const card = await requireSucceededCardPayment(
+      payment.stripePaymentIntentId,
+      booking.totalPrice,
+    );
+    await activatePaidBooking(booking.id, card);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const attachPendingClientSecret = async (
+  presented: ReturnType<typeof presentBooking>,
+  payments: Array<{
+    paymentOption: string;
+    status: string;
+    stripePaymentIntentId: string | null;
+  }>,
+) => {
+  const payment = payments.find(
+    (item) => item.paymentOption === "PAY_NOW" && item.status !== "COMPLETED" && item.stripePaymentIntentId,
+  );
+
+  if (!payment?.stripePaymentIntentId || presented.status !== "PENDING") {
+    return presented;
+  }
+
+  try {
+    const { stripe } = await import("../config/stripe.js");
+    const intent = await stripe.paymentIntents.retrieve(payment.stripePaymentIntentId);
+    if (intent.status === "succeeded" || !intent.client_secret) return presented;
+    return { ...presented, clientSecret: intent.client_secret };
+  } catch {
+    return presented;
+  }
+};
+
+const activatePaidBooking = async (
+  bookingId: string,
+  card: { cardLast4: string | null; cardBrand: string | null; paymentIntentId: string },
+) => {
+  await prisma.$transaction(async (tx) => {
+    const current = await tx.bookings.findUnique({
+      where: { id: bookingId },
+      include: { payments: true },
+    });
+
+    if (!current || current.status === "CONFIRMED" || current.status === "COMPLETED") {
+      return;
+    }
+
+    if (current.status !== "PENDING") {
+      throw new Error("Only a pending pay now booking can be activated");
+    }
+
+    await tx.bookings.update({
+      where: { id: current.id },
+      data: { status: "CONFIRMED", holdExpiresAt: null },
+    });
+
+    const payment = current.payments.find((item) => item.paymentOption === "PAY_NOW") ?? current.payments[0];
+    if (payment) {
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: "COMPLETED",
+          transactionId: card.paymentIntentId,
+          stripePaymentIntentId: card.paymentIntentId,
+          cardLast4: card.cardLast4 ?? payment.cardLast4,
+          cardBrand: card.cardBrand ?? payment.cardBrand,
+        },
+      });
+    }
+  });
 };
 
 // 6. Activate a Pay Now booking after payment succeeds
@@ -783,52 +997,135 @@ export const confirmBookingPayment = async (
     return getBookingDetails(booking.id, userId, email);
   }
 
-  const payment = booking.payments[0];
+  const payment =
+    booking.payments.find((item) => item.paymentOption === "PAY_NOW") ?? booking.payments[0];
 
-  if (booking.holdExpiresAt && booking.holdExpiresAt < new Date()) {
-    await prisma.$transaction(async (tx) => {
-      await tx.bookings.update({
-        where: { id: booking.id },
-        data: { status: "CANCELLED" },
-      });
-      if (payment?.status === "PENDING") {
-        await tx.payment.update({
-          where: { id: payment.id },
-          data: { status: "EXPIRED" },
-        });
-      }
-      await tx.carAvailability.deleteMany({
-        where: {
-          carId: booking.carId,
-          pickupDate: booking.pickupDate,
-          returnDate: booking.returnDate,
-          status: "BOOKED",
-        },
-      });
-    });
-    throw new Error("Payment window expired. Please start the booking again.");
+  if (!payment || payment.paymentOption !== "PAY_NOW") {
+    throw new Error("This booking does not require online payment");
   }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.bookings.update({
-      where: { id: booking.id },
-      data: { status: "CONFIRMED", holdExpiresAt: null },
-    });
+  if (!payment.stripePaymentIntentId) {
+    throw new Error("Card payment has not been started");
+  }
 
-    if (payment) {
-      await tx.payment.update({
-        where: { id: payment.id },
-        data: {
-          status: "COMPLETED",
-          transactionId: payment.transactionId ?? `txn_${Date.now()}`,
-          stripePaymentIntentId:
-            stripePaymentIntentId ?? payment.stripePaymentIntentId,
-        },
-      });
+  if (stripePaymentIntentId && stripePaymentIntentId !== payment.stripePaymentIntentId) {
+    throw new Error("Payment does not match this booking");
+  }
+
+  let card: Awaited<ReturnType<typeof requireSucceededCardPayment>>;
+  try {
+    card = await requireSucceededCardPayment(payment.stripePaymentIntentId, booking.totalPrice);
+  } catch (error) {
+    if (booking.holdExpiresAt && booking.holdExpiresAt < new Date()) {
+      await abandonUnpaidBooking(booking.id);
+      throw new Error("Payment window expired. Please start the booking again.");
     }
+    throw error;
+  }
+
+  await activatePaidBooking(booking.id, card);
+  return getBookingDetails(booking.id, userId, email);
+};
+
+const paymentIntentFromEvent = (event: Stripe.Event) => {
+  const intent = event.data.object;
+  if (intent.object !== "payment_intent") {
+    throw new Error("Unexpected Stripe event payload");
+  }
+  return intent;
+};
+
+const paymentIntentIdFrom = (value: string | { id: string } | null) =>
+  typeof value === "string" ? value : value?.id ?? null;
+
+const applyRefundEvent = async (event: Stripe.Event) => {
+  let paymentIntentId: string | null = null;
+
+  if (event.type === "charge.refunded") {
+    const charge = event.data.object as Stripe.Charge;
+    if (!charge.refunded) return;
+    paymentIntentId = paymentIntentIdFrom(charge.payment_intent);
+  } else {
+    const refund = event.data.object as Stripe.Refund;
+    if (refund.status !== "succeeded") return;
+    paymentIntentId = paymentIntentIdFrom(refund.payment_intent);
+  }
+
+  if (!paymentIntentId) return;
+
+  await prisma.payment.updateMany({
+    where: { stripePaymentIntentId: paymentIntentId },
+    data: { status: "REFUNDED" },
   });
 
-  return getBookingDetails(booking.id, userId, email);
+  const payment = await prisma.payment.findFirst({
+    where: { stripePaymentIntentId: paymentIntentId },
+    include: { booking: true },
+  });
+
+  if (!payment) return;
+  if (payment.booking.status !== "PENDING" && payment.booking.status !== "CONFIRMED") return;
+
+  await prisma.bookings.update({
+    where: { id: payment.bookingId },
+    data: { status: "CANCELLED", holdExpiresAt: null },
+  });
+  await releaseBookedWindow(prisma, payment.booking);
+};
+
+export const handleStripeWebhook = async (rawBody: Buffer, signature: string) => {
+  const event = constructStripeEvent(rawBody, signature);
+
+  if (event.type === "payment_intent.succeeded") {
+    const intent = paymentIntentFromEvent(event);
+    const card = await requireSucceededCardPayment(intent.id, intent.amount / 100);
+    const booking = await prisma.bookings.findFirst({
+      where: {
+        OR: [
+          ...(intent.metadata.bookingId ? [{ id: intent.metadata.bookingId }] : []),
+          { payments: { some: { stripePaymentIntentId: intent.id } } },
+        ],
+      },
+    });
+
+    if (!booking) {
+      throw new Error("Booking for this payment was not found");
+    }
+
+    if (booking.status === "CANCELLED") {
+      await refundCardPayment(intent.id);
+      await prisma.payment.updateMany({
+        where: { stripePaymentIntentId: intent.id },
+        data: { status: "REFUNDED" },
+      });
+      return;
+    }
+
+    if (toCents(booking.totalPrice) !== intent.amount) {
+      throw new Error("Paid amount does not match this booking");
+    }
+
+    await activatePaidBooking(booking.id, card);
+    return;
+  }
+
+  if (event.type === "charge.refunded" || event.type === "refund.updated" || event.type === "refund.created") {
+    await applyRefundEvent(event);
+    return;
+  }
+
+  if (event.type === "payment_intent.payment_failed") {
+    const intent = paymentIntentFromEvent(event);
+    // A declined card stays unpaid: booking PENDING, payment PENDING.
+    await prisma.payment.updateMany({
+      where: {
+        stripePaymentIntentId: intent.id,
+        status: { notIn: ["COMPLETED", "REFUNDED", "EXPIRED"] },
+        booking: { status: "PENDING" },
+      },
+      data: { status: "PENDING" },
+    });
+  }
 };
 
 // 7. Cancel booking (free cancellation up to 24 hrs before pickup)
@@ -873,6 +1170,24 @@ export const cancelBooking = async (
   // If cancelling less than 24h, we still allow but flag
   const isFreeCancellation = hoursUntilPickup >= 24;
 
+  const onlinePayment =
+    booking.payments.find((payment) => payment.paymentOption === "PAY_NOW") ?? null;
+  let onlineResult: "refunded" | "refund_pending" | "cancelled" | "none" = "none";
+
+  if (onlinePayment?.stripePaymentIntentId) {
+    try {
+      if (onlinePayment.status === "COMPLETED" || onlinePayment.status === "REFUNDED") {
+        const refundStatus = await refundCardPayment(onlinePayment.stripePaymentIntentId);
+        onlineResult = refundStatus === "succeeded" ? "refunded" : "refund_pending";
+      } else if (onlinePayment.status === "PENDING") {
+        onlineResult = await cancelOpenCardPayment(onlinePayment.stripePaymentIntentId);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Stripe could not cancel this payment";
+      throw new Error(message);
+    }
+  }
+
   return await prisma.$transaction(async (tx) => {
     // Update booking status
     const updatedBooking = await tx.bookings.update({
@@ -888,16 +1203,27 @@ export const cancelBooking = async (
       },
     });
 
-    // Update payment record
-    if (booking.payments.length > 0) {
-      for (const p of booking.payments) {
+    const updatedPayments = [];
+    for (const p of booking.payments) {
+      const refundedOnline =
+        (p.paymentOption === "PAY_NOW" && (onlineResult === "refunded" || p.status === "REFUNDED"))
+        || (p.paymentOption !== "PAY_NOW" && p.status === "COMPLETED");
+      const waitingForRefund = p.paymentOption === "PAY_NOW" && onlineResult === "refund_pending";
+
+      updatedPayments.push(
         await tx.payment.update({
           where: { id: p.id },
           data: {
-            status: p.status === "COMPLETED" ? "REFUNDED" : "CANCELLED",
+            status: refundedOnline
+              ? "REFUNDED"
+              : waitingForRefund
+                ? "COMPLETED"
+                : p.status === "EXPIRED"
+                  ? "EXPIRED"
+                  : "CANCELLED",
           },
-        });
-      }
+        }),
+      );
     }
 
     // Release car availability if booked
@@ -911,15 +1237,19 @@ export const cancelBooking = async (
     });
 
     return {
-      booking: presentBooking(updatedBooking),
+      booking: presentBooking({ ...updatedBooking, payments: updatedPayments }),
       cancellation: {
         cancelledAt: new Date().toISOString(),
         isFreeCancellation,
         hoursUntilPickup: Number(hoursUntilPickup.toFixed(1)),
         refundStatus:
-          booking.payments.some((p) => p.status === "COMPLETED")
-            ? "Full refund will be processed within 3-5 business days"
-            : "No charge occurred",
+          onlineResult === "refunded"
+            ? "The card payment has been refunded"
+            : onlineResult === "refund_pending"
+              ? "The refund has been sent to Stripe"
+              : onlineResult === "cancelled"
+                ? "The unpaid card payment was cancelled"
+                : "No online charge occurred",
         reason: reason || "Customer requested cancellation",
       },
     };
