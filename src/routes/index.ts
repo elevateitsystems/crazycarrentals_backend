@@ -6,6 +6,7 @@ import driverRoutes from './driver.routes.js';
 import uploadRoutes from './upload.routes.js';
 import bookingRoutes from './booking.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
+import paymentRoutes from './payment.routes.js';
 
 const router = Router();
 
@@ -22,6 +23,7 @@ router.use('/cars', carRoutes);
 router.use('/drivers', driverRoutes);
 router.use('/upload', uploadRoutes);
 router.use('/bookings', bookingRoutes);
+router.use('/payments', paymentRoutes);
 router.use('/admin', dashboardRoutes);
 
 export default router;
