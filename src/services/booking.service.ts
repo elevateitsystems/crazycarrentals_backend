@@ -58,17 +58,8 @@ export interface CreateBookingInput {
   };
 }
 
-const DEFAULT_EXTRAS = [
-  { name: "Additional Driver", pricePerDay: 12 },
-  { name: "Child Seat", pricePerDay: 8 },
-  { name: "GPS Navigation", pricePerDay: 10 },
-  { name: "Roadside Assistance Plus", pricePerDay: 6 },
-  { name: "Toll Pass", pricePerDay: 5 },
-  { name: "Portable Wi-Fi", pricePerDay: 9 },
-];
-
 const AIRPORT_SHUTTLE_FLAT_FEE = 30;
-const PAY_NOW_DISCOUNT_PERCENT = 5;
+const PAY_NOW_DISCOUNT_PERCENT = 9;
 const PAYMENT_HOLD_MINUTES = 30;
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -216,20 +207,19 @@ export const calculateRentalDays = (
   return Math.max(1, days);
 };
 
-// 1. Get available extra services (seeds defaults if empty)
+// 1. Active extras managed from the admin dashboard
 export const getAvailableExtras = async () => {
-  let extras = await prisma.extraService.findMany({
+  const extras = await prisma.extraService.findMany({
+    where: { isActive: true },
     orderBy: { pricePerDay: "desc" },
+    select: {
+      id: true,
+      name: true,
+      pricePerDay: true,
+      createdAt: true,
+      updatedAt: true,
+    },
   });
-
-  if (extras.length === 0) {
-    for (const item of DEFAULT_EXTRAS) {
-      await prisma.extraService.create({ data: item });
-    }
-    extras = await prisma.extraService.findMany({
-      orderBy: { pricePerDay: "desc" },
-    });
-  }
 
   return {
     extras,
@@ -241,7 +231,7 @@ export const getAvailableExtras = async () => {
     },
     discounts: {
       payNowDiscountPercent: PAY_NOW_DISCOUNT_PERCENT,
-      description: "Save 5% instantly when you Pay Now",
+      description: "Save 9% instantly when you Pay Now",
     },
   };
 };
@@ -303,7 +293,7 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
   let extrasTotal = 0;
   if (input.extraServiceIds && input.extraServiceIds.length > 0) {
     const extras = await prisma.extraService.findMany({
-      where: { id: { in: input.extraServiceIds } },
+      where: { id: { in: input.extraServiceIds }, isActive: true },
     });
     if (extras.length !== new Set(input.extraServiceIds).size) {
       throw new Error("One or more selected extras are invalid");
@@ -491,7 +481,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
 
     if (input.extraServiceIds && input.extraServiceIds.length > 0) {
       extras = await tx.extraService.findMany({
-        where: { id: { in: input.extraServiceIds } },
+        where: { id: { in: input.extraServiceIds }, isActive: true },
       });
       if (extras.length !== new Set(input.extraServiceIds).size) {
         throw new Error("One or more selected extras are invalid");
