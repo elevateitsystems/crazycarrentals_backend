@@ -95,7 +95,7 @@ Roles are `USER`, `ADMIN`, and `SUPER_ADMIN`. Admin routes accept `ADMIN` or `SU
 
 1. Pick a car, dates, extras, and renter contact.
 2. The driver shown on the booking is the driver assigned to that car. The renter does not enter a licence. A car with no assigned driver cannot be booked.
-3. **Pay now** saves the booking as `PENDING`, holds the car for about 30 minutes, and returns a Stripe `clientSecret`. The website confirms the card with Stripe.js. The booking becomes `CONFIRMED` only after Stripe reports `payment_intent.succeeded`. Pay now includes a 5% discount. The price is charged in AUD.
+3. **Pay now** saves the booking as `PENDING`, holds the car for about 30 minutes, and returns a Stripe `clientSecret`. The website confirms the card with Stripe.js. The booking becomes `CONFIRMED` only after Stripe reports `payment_intent.succeeded`. Pay now includes a 9% discount. The price is charged in AUD.
 4. **Pay at desk** confirms the booking immediately. The payment stays `PENDING_AT_DESK` until an admin collects it.
 5. A confirmed booking becomes `COMPLETED` after its return date and time, or when an admin marks it complete. `isActive` is true only while the status is `CONFIRMED`.
 
@@ -211,6 +211,20 @@ A pay-now create response includes `clientSecret`. Use that with the publishable
 
 Returns collected revenue, booking counts by status, car totals, customer count, and driver count.
 
+### Extras — `/api/admin/extras`
+
+Admin manages the add-ons shown by `GET /api/bookings/extras`. All of these routes require an admin token. Only active extras appear in the booking flow. A price change applies to new estimates and bookings.
+
+| Method | Path | Body |
+|--------|------|------|
+| `POST` | `/add` | `{ "name": "Child Seat", "pricePerDay": 8 }` |
+| `GET` | `/all` |  |
+| `GET` | `/:id` |  |
+| `PATCH` | `/update/:id` | Any of `name`, `pricePerDay`, `isActive` |
+| `DELETE` | `/delete/:id` |  |
+
+Deleting an extra that is already on a booking hides it from new bookings and keeps it on the old booking. An extra that has never been booked is removed. Set `isActive` to `true` to show a hidden extra again. Changing `pricePerDay` changes that extra's line on older bookings too. The booking total saved at checkout stays the same.
+
 ## Data
 
 Prisma models in `prisma/schema.prisma`:
@@ -222,7 +236,7 @@ Prisma models in `prisma/schema.prisma`:
 | `DriverInfo` | Licence details shown on a booking |
 | `Bookings` | Rental, dates, price, and status |
 | `Payment` | Pay now or pay at desk |
-| `ExtraService` | Optional add-ons |
+| `ExtraService` | Optional add-ons. `isActive` controls the booking list |
 | `AirportShuttle` | Shuttle selection on a booking |
 | `BookingPersonDetails` | Renter contact stored with the booking |
 | `CarAvailability` | Booked or maintenance windows |

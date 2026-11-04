@@ -21,10 +21,12 @@ const publicUser = (user: {
   name: string;
   email: string;
   createdAt: Date;
+  role: Role;
 }) => ({
   id: user.id,
   name: user.name,
   email: user.email,
+  role: user.role,
   createdAt: user.createdAt,
 });
 
