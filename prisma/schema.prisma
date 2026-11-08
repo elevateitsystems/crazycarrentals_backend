@@ -167,10 +167,11 @@ model Bookings {
     returnTime     String
     returnLocation String
 
-    rentalDays  Int?
-    basePrice   Float?
-    extrasPrice Float?
-    discount    Float? @default(0)
+    rentalDays      Int?
+    basePrice       Float?
+    extrasPrice     Float?
+    protectionPrice Float?
+    discount        Float? @default(0)
 
     // payment
     totalPrice Float
@@ -191,6 +192,7 @@ model Bookings {
     driverInfo   DriverInfo? @relation(fields: [driverInfoId], references: [id])
 
     extraServices        ExtraService[]
+    protections          Protection[]
     bookingPersonDetails BookingPersonDetails[]
     bookingDriverDetails BookingDriverDetails?
     airportShuttles      AirportShuttle[]
@@ -202,6 +204,26 @@ model ExtraService {
     name        String
     pricePerDay Float
     isActive    Boolean @default(true)
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    bookings Bookings[]
+}
+
+model Protection {
+    id            String   @id @default(cuid())
+    name          String
+    pricePerDay   Float
+    isActive      Boolean  @default(true)
+    isPopular     Boolean  @default(false)
+    included      String[] @default([])
+    excluded      String[] @default([])
+    excessLabel   String   @default("Excess applicable")
+    excessOver25  String   @default("")
+    excessUnder25 String   @default("")
+    bondCredit    Float    @default(200)
+    bondDebit     Float    @default(500)
 
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt

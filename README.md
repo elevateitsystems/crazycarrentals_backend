@@ -225,6 +225,20 @@ Admin manages the add-ons shown by `GET /api/bookings/extras`. All of these rout
 
 Deleting an extra that is already on a booking hides it from new bookings and keeps it on the old booking. An extra that has never been booked is removed. Set `isActive` to `true` to show a hidden extra again. Changing `pricePerDay` changes that extra's line on older bookings too. The booking total saved at checkout stays the same.
 
+### Protections — `/api/admin/protections`
+
+Admin manages the protection plans on the booking step. All of these routes require an admin token. Active protections are returned by `GET /api/bookings/extras` in `protections`, and also in `extras`, so the booking page can price the selected plan. The charge is `pricePerDay` times the rental days, then the pay-now discount applies. The website's Standard Cover stays free. Name the paid plans `Medium Protection` and `Platinum Premium` so the current booking page matches them.
+
+| Method | Path | Body |
+|--------|------|------|
+| `POST` | `/add` | Name, `pricePerDay`, `included`, `excluded`, excess text, and bond amounts |
+| `GET` | `/all` |  |
+| `GET` | `/:id` |  |
+| `PATCH` | `/update/:id` | Any of `name`, `pricePerDay`, `isActive` |
+| `DELETE` | `/delete/:id` |  |
+
+The renter sends the chosen protection id in `extraServiceIds` on estimate and create, together with any extra ids. Deleting a protection that is already on a booking hides it from new bookings. Set `isActive` to `true` to show it again.
+
 ## Data
 
 Prisma models in `prisma/schema.prisma`:
@@ -237,6 +251,7 @@ Prisma models in `prisma/schema.prisma`:
 | `Bookings` | Rental, dates, price, and status |
 | `Payment` | Pay now or pay at desk |
 | `ExtraService` | Optional add-ons. `isActive` controls the booking list |
+| `Protection` | Protection plan priced per day |
 | `AirportShuttle` | Shuttle selection on a booking |
 | `BookingPersonDetails` | Renter contact stored with the booking |
 | `CarAvailability` | Booked or maintenance windows |

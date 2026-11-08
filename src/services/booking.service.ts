@@ -104,6 +104,7 @@ const buildOrderSummary = (booking: {
   discount?: number | null;
   car?: { pricePerDay?: number | null } | null;
   extraServices?: Array<{ name: string; pricePerDay: number }>;
+  protections?: Array<{ name: string; pricePerDay: number }>;
   airportShuttles?: Array<{ shuttleService: boolean; price: number }>;
 }) => {
   const days = booking.rentalDays ?? 1;
@@ -117,6 +118,13 @@ const buildOrderSummary = (booking: {
           ? `${days} ${days === 1 ? "day" : "days"} × $${rate}`
           : "Vehicle",
       amount: booking.basePrice,
+    });
+  }
+
+  for (const protection of booking.protections ?? []) {
+    lines.push({
+      label: protection.name,
+      amount: Number((protection.pricePerDay * days).toFixed(2)),
     });
   }
 
@@ -162,6 +170,7 @@ const presentBooking = (booking: {
     driverInfo?: Parameters<typeof formatPublicDriverInfo>[0];
   } | null;
   extraServices?: Array<{ name: string; pricePerDay: number }>;
+  protections?: Array<{ name: string; pricePerDay: number }>;
   airportShuttles?: Array<{ shuttleService: boolean; price: number }>;
   payments?: Array<{ paymentOption?: string; status?: string }>;
   [key: string]: unknown;
@@ -208,21 +217,82 @@ export const calculateRentalDays = (
 };
 
 // 1. Active extras managed from the admin dashboard
+type PricedAddOn = { id: string; name: string; pricePerDay: number };
+
+const loadSelectedAddOns = async (db: Db, ids: string[] | undefined) => {
+  const uniqueIds = [...new Set(ids ?? [])];
+  if (uniqueIds.length === 0) {
+    return { extras: [] as PricedAddOn[], protections: [] as PricedAddOn[] };
+  }
+
+  const [extras, protections] = await Promise.all([
+    db.extraService.findMany({
+      where: { id: { in: uniqueIds }, isActive: true },
+      select: { id: true, name: true, pricePerDay: true },
+    }),
+    db.protection.findMany({
+      where: { id: { in: uniqueIds }, isActive: true },
+      select: { id: true, name: true, pricePerDay: true },
+    }),
+  ]);
+
+  if (extras.length + protections.length !== uniqueIds.length) {
+    throw new Error("One or more selected extras are invalid");
+  }
+
+  return { extras, protections };
+};
+
+const priceAddOns = (items: PricedAddOn[], days: number) =>
+  items.map((item) => ({
+    ...item,
+    days,
+    total: Number((item.pricePerDay * days).toFixed(2)),
+  }));
+
 export const getAvailableExtras = async () => {
-  const extras = await prisma.extraService.findMany({
-    where: { isActive: true },
-    orderBy: { pricePerDay: "desc" },
-    select: {
-      id: true,
-      name: true,
-      pricePerDay: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  });
+  const [extras, protections] = await Promise.all([
+    prisma.extraService.findMany({
+      where: { isActive: true },
+      orderBy: { pricePerDay: "desc" },
+      select: {
+        id: true,
+        name: true,
+        pricePerDay: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    }),
+    prisma.protection.findMany({
+      where: { isActive: true },
+      orderBy: { pricePerDay: "asc" },
+    }),
+  ]);
 
   return {
-    extras,
+    extras: [
+      ...extras,
+      ...protections.map((protection) => ({
+        id: protection.id,
+        name: protection.name,
+        pricePerDay: protection.pricePerDay,
+        createdAt: protection.createdAt,
+        updatedAt: protection.updatedAt,
+      })),
+    ],
+    protections: protections.map((protection) => ({
+      id: protection.id,
+      name: protection.name,
+      pricePerDay: protection.pricePerDay,
+      isPopular: protection.isPopular,
+      included: protection.included,
+      excluded: protection.excluded,
+      excessLabel: protection.excessLabel,
+      excessOver25: protection.excessOver25,
+      excessUnder25: protection.excessUnder25,
+      bondCredit: protection.bondCredit,
+      bondDebit: protection.bondDebit,
+    })),
     airportShuttle: {
       name: "Airport Shuttle",
       price: AIRPORT_SHUTTLE_FLAT_FEE,
@@ -281,40 +351,26 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
   const isAvailable =
     car.isAvailable && Boolean(car.driverInfo) && conflictingBookings.length === 0;
 
-  // Selected extras breakdown
-  let selectedExtrasBreakdown: Array<{
-    id: string;
-    name: string;
-    pricePerDay: number;
-    days: number;
-    total: number;
-  }> = [];
-
-  let extrasTotal = 0;
-  if (input.extraServiceIds && input.extraServiceIds.length > 0) {
-    const extras = await prisma.extraService.findMany({
-      where: { id: { in: input.extraServiceIds }, isActive: true },
-    });
-    if (extras.length !== new Set(input.extraServiceIds).size) {
-      throw new Error("One or more selected extras are invalid");
-    }
-
-    selectedExtrasBreakdown = extras.map((e) => {
-      const total = Number((e.pricePerDay * rentalDays).toFixed(2));
-      extrasTotal += total;
-      return {
-        id: e.id,
-        name: e.name,
-        pricePerDay: e.pricePerDay,
-        days: rentalDays,
-        total,
-      };
-    });
-  }
+  const selected = await loadSelectedAddOns(prisma, input.extraServiceIds);
+  const selectedExtrasBreakdown = priceAddOns(selected.extras, rentalDays);
+  const selectedProtectionsBreakdown = priceAddOns(
+    selected.protections,
+    rentalDays,
+  );
+  const extrasTotal = selectedExtrasBreakdown.reduce(
+    (sum, extra) => sum + extra.total,
+    0,
+  );
+  const protectionTotal = selectedProtectionsBreakdown.reduce(
+    (sum, protection) => sum + protection.total,
+    0,
+  );
 
   const shuttlePrice = input.airportShuttle ? AIRPORT_SHUTTLE_FLAT_FEE : 0;
   const baseCarPrice = Number((car.pricePerDay * rentalDays).toFixed(2));
-  const subtotal = Number((baseCarPrice + extrasTotal + shuttlePrice).toFixed(2));
+  const subtotal = Number(
+    (baseCarPrice + extrasTotal + protectionTotal + shuttlePrice).toFixed(2),
+  );
 
   const isPayNow = input.paymentOption === "PAY_NOW" || !input.paymentOption;
   const payNowDiscount = Number(((subtotal * PAY_NOW_DISCOUNT_PERCENT) / 100).toFixed(2));
@@ -328,6 +384,10 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
       label: `${rentalDays} ${rentalDays === 1 ? "day" : "days"} × $${car.pricePerDay}`,
       amount: baseCarPrice,
     },
+    ...selectedProtectionsBreakdown.map((protection) => ({
+      label: protection.name,
+      amount: protection.total,
+    })),
     ...selectedExtrasBreakdown.map((extra) => ({
       label: extra.name,
       amount: extra.total,
@@ -373,6 +433,8 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
       baseCarPrice,
       selectedExtras: selectedExtrasBreakdown,
       extrasTotal: Number(extrasTotal.toFixed(2)),
+      selectedProtections: selectedProtectionsBreakdown,
+      protectionTotal: Number(protectionTotal.toFixed(2)),
       airportShuttlePrice: shuttlePrice,
       subtotal,
       discount,
@@ -476,24 +538,23 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
     }
 
     // 4. Calculate prices
-    let extrasTotal = 0;
-    let extras: Array<{ id: string; name: string; pricePerDay: number }> = [];
-
-    if (input.extraServiceIds && input.extraServiceIds.length > 0) {
-      extras = await tx.extraService.findMany({
-        where: { id: { in: input.extraServiceIds }, isActive: true },
-      });
-      if (extras.length !== new Set(input.extraServiceIds).size) {
-        throw new Error("One or more selected extras are invalid");
-      }
-      for (const extra of extras) {
-        extrasTotal += extra.pricePerDay * rentalDays;
-      }
-    }
+    const selected = await loadSelectedAddOns(tx, input.extraServiceIds);
+    const extras = selected.extras;
+    const protections = selected.protections;
+    const extrasTotal = extras.reduce(
+      (sum, extra) => sum + extra.pricePerDay * rentalDays,
+      0,
+    );
+    const protectionTotal = protections.reduce(
+      (sum, protection) => sum + protection.pricePerDay * rentalDays,
+      0,
+    );
 
     const shuttlePrice = input.airportShuttle ? AIRPORT_SHUTTLE_FLAT_FEE : 0;
     const baseCarPrice = Number((car.pricePerDay * rentalDays).toFixed(2));
-    const subtotal = Number((baseCarPrice + extrasTotal + shuttlePrice).toFixed(2));
+    const subtotal = Number(
+      (baseCarPrice + extrasTotal + protectionTotal + shuttlePrice).toFixed(2),
+    );
 
     const isPayNow = input.payment.paymentOption === "PAY_NOW";
     const discount = isPayNow
@@ -522,6 +583,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
         rentalDays,
         basePrice: baseCarPrice,
         extrasPrice: Number(extrasTotal.toFixed(2)),
+        protectionPrice: Number(protectionTotal.toFixed(2)),
         discount,
         totalPrice,
         status: isPayNow ? "PENDING" : "CONFIRMED",
@@ -530,6 +592,9 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
           : null,
         extraServices: {
           connect: extras.map((e) => ({ id: e.id })),
+        },
+        protections: {
+          connect: protections.map((protection) => ({ id: protection.id })),
         },
       },
     });
@@ -598,6 +663,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
         bookingPersonDetails: true,
         airportShuttles: true,
         extraServices: true,
+        protections: true,
         payments: true,
       },
     });
@@ -688,6 +754,7 @@ export const getUserBookings = async (
         bookingPersonDetails: true,
         airportShuttles: true,
         extraServices: true,
+        protections: true,
         driverInfo: true,
       },
     }),
@@ -722,6 +789,7 @@ export const getUserBookings = async (
         bookingPersonDetails: true,
         airportShuttles: true,
         extraServices: true,
+        protections: true,
         driverInfo: true,
       },
     });
@@ -765,6 +833,7 @@ export const getBookingDetails = async (
       bookingPersonDetails: true,
       airportShuttles: true,
       extraServices: true,
+      protections: true,
       payments: true,
     },
   });
@@ -803,6 +872,7 @@ export const getBookingDetails = async (
         bookingPersonDetails: true,
         airportShuttles: true,
         extraServices: true,
+        protections: true,
         payments: true,
       },
     });
@@ -1189,6 +1259,7 @@ export const cancelBooking = async (
         bookingPersonDetails: true,
         driverInfo: true,
         extraServices: true,
+        protections: true,
         airportShuttles: true,
       },
     });
