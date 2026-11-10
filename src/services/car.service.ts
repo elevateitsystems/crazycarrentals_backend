@@ -4,6 +4,10 @@ import { AppError } from "../utils/app-error.js";
 import { uploadFilesToMinio, deleteFileFromMinio } from "./minio.service.js";
 import { formatPublicDriverInfo } from "./driver.service.js";
 import {
+  applyDisplayedDailyPrice,
+  displayRateDate,
+} from "./car-rate.service.js";
+import {
   CarType,
   TransmissionType,
   FuelType,
@@ -173,6 +177,7 @@ export interface CarQueryFilters {
 }
 
 export const getAllCars = async (filters: CarQueryFilters = {}) => {
+  const rateDate = displayRateDate(filters.pickupDate);
   const where: Prisma.CarWhereInput = {
     isAvailable: true,
   };
@@ -222,7 +227,17 @@ export const getAllCars = async (filters: CarQueryFilters = {}) => {
     }
 
     if (Object.keys(priceFilter).length > 0) {
-      where.pricePerDay = priceFilter;
+      andConditions.push({
+        OR: [
+          { dailyRates: { some: { date: rateDate, price: priceFilter } } },
+          {
+            AND: [
+              { dailyRates: { none: { date: rateDate } } },
+              { pricePerDay: priceFilter },
+            ],
+          },
+        ],
+      });
     }
   }
 
@@ -380,12 +395,24 @@ export const getAllCars = async (filters: CarQueryFilters = {}) => {
   ]);
 
   const totalPages = Math.ceil(total / limit);
-
-  return {
-    cars: cars.map((car) => ({
+  let listedCars = await applyDisplayedDailyPrice(
+    cars.map((car) => ({
       ...car,
       driverInfo: formatPublicDriverInfo(car.driverInfo),
     })),
+    rateDate,
+  );
+
+  if (sortBy === "pricePerDay") {
+    listedCars = [...listedCars].sort((left, right) =>
+      sortOrder === "asc"
+        ? left.pricePerDay - right.pricePerDay
+        : right.pricePerDay - left.pricePerDay,
+    );
+  }
+
+  return {
+    cars: listedCars,
     pagination: {
       total,
       page,
@@ -417,7 +444,10 @@ export const searchCars = async (filters: CarQueryFilters = {}) => {
   };
 };
 
-export const getCarById = async (id: string) => {
+export const getCarById = async (
+  id: string,
+  filters: Pick<CarQueryFilters, "pickupDate"> = {},
+) => {
   const now = new Date();
   const car = await prisma.car.findUnique({
     where: { id },
@@ -454,10 +484,18 @@ export const getCarById = async (id: string) => {
   }
 
   const { bookings, ...carData } = car;
+  const [pricedCar] = await applyDisplayedDailyPrice(
+    [
+      {
+        ...carData,
+        driverInfo: formatPublicDriverInfo(car.driverInfo),
+      },
+    ],
+    displayRateDate(filters.pickupDate),
+  );
 
   return {
-    ...carData,
-    driverInfo: formatPublicDriverInfo(car.driverInfo),
+    ...pricedCar,
     bookedDates: bookings.map((booking) => ({
       status: booking.status,
       pickupDate: booking.pickupDate,

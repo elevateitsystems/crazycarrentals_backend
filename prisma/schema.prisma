@@ -102,6 +102,7 @@ model Car {
     reviews           Review[]
     bookings          Bookings[]
     carAvailabilities CarAvailability[]
+    dailyRates        CarDailyRate[]
     driverInfo        DriverInfo?       @relation(fields: [driverInfoId], references: [id])
     driverInfoId      String?
 }
@@ -152,6 +153,21 @@ model CarAvailability {
     car Car @relation(fields: [carId], references: [id])
 }
 
+model CarDailyRate {
+    id    String   @id @default(cuid())
+    carId String
+    date  DateTime @db.Date
+    price Float
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    car Car @relation(fields: [carId], references: [id], onDelete: Cascade)
+
+    @@unique([carId, date])
+    @@index([carId, date])
+}
+
 model Bookings {
     id               String  @id @default(cuid())
     bookingReference String? @unique
@@ -168,9 +184,10 @@ model Bookings {
     returnLocation String
 
     rentalDays      Int?
-    basePrice       Float?
-    extrasPrice     Float?
-    protectionPrice Float?
+    basePrice         Float?
+    vehicleDailyRates Json?
+    extrasPrice       Float?
+    protectionPrice   Float?
     discount        Float? @default(0)
 
     // payment

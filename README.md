@@ -95,7 +95,7 @@ Roles are `USER`, `ADMIN`, and `SUPER_ADMIN`. Admin routes accept `ADMIN` or `SU
 
 1. Pick a car, dates, extras, and renter contact.
 2. The driver shown on the booking is the driver assigned to that car. The renter does not enter a licence. A car with no assigned driver cannot be booked.
-3. **Pay now** saves the booking as `PENDING`, holds the car for about 30 minutes, and returns a Stripe `clientSecret`. The website confirms the card with Stripe.js. The booking becomes `CONFIRMED` only after Stripe reports `payment_intent.succeeded`. Pay now includes a 9% discount. The price is charged in AUD.
+3. **Pay now** saves the booking as `PENDING`, holds the car for about 30 minutes, and returns a Stripe `clientSecret`. The website confirms the card with Stripe.js. The booking becomes `CONFIRMED` only after Stripe reports `payment_intent.succeeded`. Pay now includes a 9% discount on the vehicle rate only. The price is charged in AUD.
 4. **Pay at desk** confirms the booking immediately. The payment stays `PENDING_AT_DESK` until an admin collects it.
 5. A confirmed booking becomes `COMPLETED` after its return date and time, or when an admin marks it complete. `isActive` is true only while the status is `CONFIRMED`.
 
@@ -103,7 +103,7 @@ Booking statuses: `PENDING`, `CONFIRMED`, `COMPLETED`, `CANCELLED`.
 
 Payment options: `PAY_NOW`, `PAY_AT_DESK`.
 
-Price is the daily rate times the rental days, plus extras per day, plus a shuttle fee when selected. GST is included in the price.
+The vehicle charge is the price of each selected rental day added together. A day with a calendar rate uses that rate. A day without one uses the car's default `pricePerDay`. Protection and extras are added per rental day, then the $30 shuttle when selected. Pay now takes 9% off the vehicle charge only. Protection, extras, and the shuttle stay at full price. The saved booking total and the card payment both use this amount. GST is included. Bookings already saved keep the discount they were given.
 
 ## API
 
@@ -142,6 +142,26 @@ Price is the daily rate times the rental days, plus extras per day, plus a shutt
 | `PATCH` | `/update-car/:id` | Admin. Multipart images |
 | `PATCH` | `/:id/assign-driver` | Admin. Body `{ "driverId" }` or `null` |
 | `DELETE` | `/delete-car/:id` | Admin |
+| `GET` | `/:id/daily-rates?from=YYYY-MM-DD&to=YYYY-MM-DD` | Admin |
+| `PUT` | `/:id/daily-rates` | Admin |
+
+`pricePerDay` stored on the car is the default rate. The public car list, search, and car page replace `pricePerDay` with that date's calendar rate before responding. With no `pickupDate`, the date is today in Tasmania. A search that sends `pickupDate` uses that date. The stored default is also returned as `basePricePerDay`. The website keeps reading `pricePerDay` and does not call the daily-rates API. Booking totals add the calendar rate for each rental day, and days without a saved rate use the default.
+
+Set a stretch of dates, then override single days. A `null` price removes that day's custom rate.
+
+```json
+{
+  "ranges": [
+    { "from": "2026-12-01", "to": "2026-12-10", "price": 87 },
+    { "from": "2026-12-24", "to": "2026-12-26", "price": 150 }
+  ],
+  "rates": [
+    { "date": "2026-12-11", "price": 97 },
+    { "date": "2026-12-12", "price": 111 },
+    { "date": "2026-12-13", "price": null }
+  ]
+}
+```
 
 Search accepts `carType`, `transmission`, `fuelType`, `brand`, `searchTerm`, `minPrice`, `maxPrice`, `pickupDate`, `returnDate`, `pickupLocation`, `returnLocation`, `age`, `page`, and `limit`.
 
@@ -227,7 +247,7 @@ Deleting an extra that is already on a booking hides it from new bookings and ke
 
 ### Protections — `/api/admin/protections`
 
-Admin manages the protection plans on the booking step. All of these routes require an admin token. Active protections are returned by `GET /api/bookings/extras` in `protections`, and also in `extras`, so the booking page can price the selected plan. The charge is `pricePerDay` times the rental days, then the pay-now discount applies. The website's Standard Cover stays free. Name the paid plans `Medium Protection` and `Platinum Premium` so the current booking page matches them.
+Admin manages the protection plans on the booking step. All of these routes require an admin token. Active protections are returned by `GET /api/bookings/extras` in `protections`, and also in `extras`, so the booking page can price the selected plan. The charge is `pricePerDay` times the rental days. The pay-now discount does not apply to protection. The website's Standard Cover stays free. Name the paid plans `Medium Protection` and `Platinum Premium` so the current booking page matches them.
 
 | Method | Path | Body |
 |--------|------|------|

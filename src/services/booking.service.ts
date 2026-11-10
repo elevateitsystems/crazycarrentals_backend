@@ -4,6 +4,11 @@ import type Stripe from "stripe";
 import { prisma } from "../config/prisma.js";
 import { formatPublicDriverInfo } from "./driver.service.js";
 import {
+  groupVehicleRateLines,
+  quoteVehicleStay,
+  readVehicleDailyRates,
+} from "./car-rate.service.js";
+import {
   cancelOpenCardPayment,
   constructStripeEvent,
   createCardPayment,
@@ -60,6 +65,9 @@ export interface CreateBookingInput {
 
 const AIRPORT_SHUTTLE_FLAT_FEE = 30;
 const PAY_NOW_DISCOUNT_PERCENT = 9;
+
+const payNowDiscountOnVehicle = (vehicleBase: number) =>
+  Number(((vehicleBase * PAY_NOW_DISCOUNT_PERCENT) / 100).toFixed(2));
 const PAYMENT_HOLD_MINUTES = 30;
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -101,6 +109,7 @@ const releaseExpiredHolds = async (db: Db, carId: string) => {
 const buildOrderSummary = (booking: {
   rentalDays?: number | null;
   basePrice?: number | null;
+  vehicleDailyRates?: unknown;
   discount?: number | null;
   car?: { pricePerDay?: number | null } | null;
   extraServices?: Array<{ name: string; pricePerDay: number }>;
@@ -111,7 +120,10 @@ const buildOrderSummary = (booking: {
   const rate = booking.car?.pricePerDay;
   const lines: Array<{ label: string; amount: number }> = [];
 
-  if (booking.basePrice != null) {
+  const savedRates = readVehicleDailyRates(booking.vehicleDailyRates);
+  if (savedRates) {
+    lines.push(...groupVehicleRateLines(savedRates));
+  } else if (booking.basePrice != null) {
     lines.push({
       label:
         rate != null
@@ -301,7 +313,7 @@ export const getAvailableExtras = async () => {
     },
     discounts: {
       payNowDiscountPercent: PAY_NOW_DISCOUNT_PERCENT,
-      description: "Save 9% instantly when you Pay Now",
+      description: "Save 9% on the vehicle rate when you Pay Now",
     },
   };
 };
@@ -366,24 +378,27 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
     0,
   );
 
+  const vehicleQuote = await quoteVehicleStay(
+    car.id,
+    car.pricePerDay,
+    input.pickupDate,
+    rentalDays,
+  );
   const shuttlePrice = input.airportShuttle ? AIRPORT_SHUTTLE_FLAT_FEE : 0;
-  const baseCarPrice = Number((car.pricePerDay * rentalDays).toFixed(2));
+  const baseCarPrice = vehicleQuote.total;
   const subtotal = Number(
     (baseCarPrice + extrasTotal + protectionTotal + shuttlePrice).toFixed(2),
   );
 
   const isPayNow = input.paymentOption === "PAY_NOW" || !input.paymentOption;
-  const payNowDiscount = Number(((subtotal * PAY_NOW_DISCOUNT_PERCENT) / 100).toFixed(2));
+  const payNowDiscount = payNowDiscountOnVehicle(baseCarPrice);
   const discount = isPayNow ? payNowDiscount : 0;
   const payNowTotal = Number((subtotal - payNowDiscount).toFixed(2));
   const payAtDeskTotal = subtotal;
   const totalPrice = isPayNow ? payNowTotal : payAtDeskTotal;
 
   const summary = [
-    {
-      label: `${rentalDays} ${rentalDays === 1 ? "day" : "days"} × $${car.pricePerDay}`,
-      amount: baseCarPrice,
-    },
+    ...vehicleQuote.lines,
     ...selectedProtectionsBreakdown.map((protection) => ({
       label: protection.name,
       amount: protection.total,
@@ -431,6 +446,7 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
       dailyCarRate: car.pricePerDay,
       rentalDays,
       baseCarPrice,
+      dailyRates: vehicleQuote.days,
       selectedExtras: selectedExtrasBreakdown,
       extrasTotal: Number(extrasTotal.toFixed(2)),
       selectedProtections: selectedProtectionsBreakdown,
@@ -550,16 +566,20 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
       0,
     );
 
+    const vehicleQuote = await quoteVehicleStay(
+      car.id,
+      car.pricePerDay,
+      input.pickupDate,
+      rentalDays,
+    );
     const shuttlePrice = input.airportShuttle ? AIRPORT_SHUTTLE_FLAT_FEE : 0;
-    const baseCarPrice = Number((car.pricePerDay * rentalDays).toFixed(2));
+    const baseCarPrice = vehicleQuote.total;
     const subtotal = Number(
       (baseCarPrice + extrasTotal + protectionTotal + shuttlePrice).toFixed(2),
     );
 
     const isPayNow = input.payment.paymentOption === "PAY_NOW";
-    const discount = isPayNow
-      ? Number(((subtotal * PAY_NOW_DISCOUNT_PERCENT) / 100).toFixed(2))
-      : 0;
+    const discount = isPayNow ? payNowDiscountOnVehicle(baseCarPrice) : 0;
 
     const totalPrice = Number((subtotal - discount).toFixed(2));
 
@@ -582,6 +602,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
         returnLocation: input.returnLocation,
         rentalDays,
         basePrice: baseCarPrice,
+        vehicleDailyRates: vehicleQuote.days,
         extrasPrice: Number(extrasTotal.toFixed(2)),
         protectionPrice: Number(protectionTotal.toFixed(2)),
         discount,
