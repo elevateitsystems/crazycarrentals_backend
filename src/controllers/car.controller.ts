@@ -1,5 +1,6 @@
 import type { RequestHandler } from 'express';
 import * as carService from '../services/car.service.js';
+import * as carRateService from '../services/car-rate.service.js';
 import * as driverService from '../services/driver.service.js';
 
 export const addNewCar: RequestHandler = async (req, res, next) => {
@@ -49,7 +50,10 @@ export const searchCars: RequestHandler = async (req, res, next) => {
 
 export const getCarById: RequestHandler = async (req, res, next) => {
   try {
-    const car = await carService.getCarById(req.params.id as string);
+    const car = await carService.getCarById(
+      req.params.id as string,
+      req.query,
+    );
 
     res.status(200).json({
       success: true,
@@ -60,6 +64,42 @@ export const getCarById: RequestHandler = async (req, res, next) => {
   }
 };
 
+
+export const getCarDailyRates: RequestHandler = async (req, res, next) => {
+  try {
+    const from = String(req.query.from ?? "");
+    const to = String(req.query.to ?? "");
+    const rates = await carRateService.getCarDailyRates(
+      req.params.id as string,
+      from,
+      to,
+    );
+
+    res.status(200).json({
+      success: true,
+      data: rates,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const setCarDailyRates: RequestHandler = async (req, res, next) => {
+  try {
+    const rates = await carRateService.setCarDailyRates(
+      req.params.id as string,
+      req.body,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Daily rates saved",
+      data: rates,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const updateCarById: RequestHandler = async (req, res, next) => {
     try {

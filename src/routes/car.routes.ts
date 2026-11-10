@@ -5,6 +5,7 @@ import { authenticate } from '../middlewares/authenticate.js';
 import { validate } from '../middlewares/validate.js';
 import { uploadCarImages } from '../middlewares/upload.middleware.js';
 import { assignDriverSchema } from '../validators/driver.validator.js';
+import { setCarDailyRatesSchema } from '../validators/car-rate.validator.js';
 
 const router = Router();
 
@@ -13,6 +14,13 @@ router.post('/add-new-car', uploadCarImages, adminOnly, carController.addNewCar)
 router.get('/', carController.getAllCars);
 router.get('/search', carController.searchCars);
 router.post('/search', carController.searchCars);
+router.get('/:id/daily-rates', adminOnly, carController.getCarDailyRates);
+router.put(
+  '/:id/daily-rates',
+  adminOnly,
+  validate(setCarDailyRatesSchema),
+  carController.setCarDailyRates,
+);
 router.get('/:id', carController.getCarById);
 router.patch(
   '/:id/assign-driver',
