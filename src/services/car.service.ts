@@ -7,12 +7,63 @@ import {
   applyDisplayedDailyPrice,
   displayRateDate,
 } from "./car-rate.service.js";
+import { publicCarFields } from "./car-presentation.js";
 import {
   CarType,
   TransmissionType,
   FuelType,
   type Prisma,
 } from "@prisma/client";
+
+const parseBoolean = (value: unknown) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["true", "1", "yes"].includes(normalized)) return true;
+  if (["false", "0", "no"].includes(normalized)) return false;
+  return undefined;
+};
+
+const parseWholeNumber = (value: unknown) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return undefined;
+  return parsed;
+};
+
+const carTypeFromInput = (value: unknown) => {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const compact = value.trim().toLowerCase().replace(/[_-]+/g, " ");
+  const aliases: Record<string, CarType> = {
+    suv: CarType.SUVs,
+    suvs: CarType.SUVs,
+    "premium suv": CarType.PREMIUM_SUV,
+    "7 seater": CarType.SEVEN_SEATER,
+    "seven seater": CarType.SEVEN_SEATER,
+    sedan: CarType.SEDAN,
+    hatchback: CarType.HATCHBACK,
+    luxury: CarType.LUXURY,
+    "compact cars": CarType.COMPACT_CARS,
+    compact: CarType.COMPACT_CARS,
+    "electric cars": CarType.ELECTRIC_CARS,
+    electric: CarType.ELECTRIC_CARS,
+    commercial: CarType.COMMERCIAL,
+  };
+  return (
+    aliases[compact] ??
+    Object.values(CarType).find((type) => type.toLowerCase() === compact)
+  );
+};
+
+const fuelTypeFromInput = (value: unknown) => {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const compact = value.trim().toLowerCase();
+  return Object.values(FuelType).find((fuel) => fuel.toLowerCase() === compact);
+};
 
 const parseArray = (value: unknown): string[] => {
   if (!value) return [];
@@ -57,6 +108,11 @@ export const addNewCar = async (req: Request) => {
     features,
     safetyRatings,
     description,
+    soldOut,
+    suitcases,
+    airConditioning,
+    minimumDriverAge,
+    unlimitedMileage,
   } = rawBody;
 
   const requiredFields = [
@@ -114,6 +170,10 @@ export const addNewCar = async (req: Request) => {
   const parsedPricePerDay = Number(pricePerDay);
   const parsedTotalSeat = Number(totalSeat);
   const parsedDoors = Number(doors);
+  const parsedCarType = carTypeFromInput(carType);
+  const parsedFuelType = fuelTypeFromInput(fuelType);
+  const parsedSuitcases = parseWholeNumber(suitcases);
+  const parsedMinimumAge = parseWholeNumber(minimumDriverAge);
 
   if (
     Number.isNaN(parsedYear) ||
@@ -127,6 +187,25 @@ export const addNewCar = async (req: Request) => {
     );
   }
 
+  if (!parsedCarType) {
+    throw new AppError(400, "carType is not a valid vehicle category");
+  }
+
+  if (!parsedFuelType) {
+    throw new AppError(400, "fuelType is not a valid fuel type");
+  }
+
+  if (parsedSuitcases !== undefined && (parsedSuitcases < 0 || parsedSuitcases > 20)) {
+    throw new AppError(400, "suitcases must be between 0 and 20");
+  }
+
+  if (
+    parsedMinimumAge !== undefined &&
+    (parsedMinimumAge < 18 || parsedMinimumAge > 99)
+  ) {
+    throw new AppError(400, "minimumDriverAge must be between 18 and 99");
+  }
+
   const car = await prisma.car.create({
     data: {
       brand: String(brand).trim(),
@@ -138,18 +217,84 @@ export const addNewCar = async (req: Request) => {
       totalSeat: parsedTotalSeat,
       doors: parsedDoors,
       mileage: String(mileage).trim(),
-      fuelType: fuelType as FuelType,
+      fuelType: parsedFuelType,
       transmission: transmission as TransmissionType,
-      carType: carType as CarType,
+      carType: parsedCarType,
       images: allImages,
       videoUrl: videoUrl ? String(videoUrl).trim() : null,
       features: parseArray(features),
       safetyRatings: parseArray(safetyRatings),
       description: String(description).trim(),
+      ...(parseBoolean(soldOut) !== undefined
+        ? { soldOut: parseBoolean(soldOut) }
+        : {}),
+      ...(parsedSuitcases !== undefined ? { suitcases: parsedSuitcases } : {}),
+      ...(parseBoolean(airConditioning) !== undefined
+        ? { airConditioning: parseBoolean(airConditioning) }
+        : {}),
+      ...(parsedMinimumAge !== undefined
+        ? { minimumDriverAge: parsedMinimumAge }
+        : {}),
+      ...(parseBoolean(unlimitedMileage) !== undefined
+        ? { unlimitedMileage: parseBoolean(unlimitedMileage) }
+        : {}),
     },
   });
 
   return car;
+};
+
+const stayRangeFromFilters = (filters: CarQueryFilters) => {
+  if (!filters.pickupDate && !filters.returnDate) return null;
+  const from = filters.pickupDate ? new Date(String(filters.pickupDate)) : null;
+  const to = filters.returnDate ? new Date(String(filters.returnDate)) : from;
+  if (!from || !to || Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    return null;
+  }
+  return { from, to };
+};
+
+const blockedCarIds = async (
+  ids: string[],
+  stay: { from: Date; to: Date } | null,
+) => {
+  const blocked = new Set<string>();
+  if (!stay || ids.length === 0) return blocked;
+
+  const now = new Date();
+  const [booked, maintenance] = await Promise.all([
+    prisma.bookings.findMany({
+      where: {
+        carId: { in: ids },
+        pickupDate: { lte: stay.to },
+        returnDate: { gte: stay.from },
+        OR: [
+          { status: "CONFIRMED" },
+          {
+            status: "PENDING",
+            OR: [{ holdExpiresAt: null }, { holdExpiresAt: { gt: now } }],
+          },
+        ],
+      },
+      select: { carId: true },
+      distinct: ["carId"],
+    }),
+    prisma.carAvailability.findMany({
+      where: {
+        carId: { in: ids },
+        status: "MAINTENANCE",
+        pickupDate: { lte: stay.to },
+        returnDate: { gte: stay.from },
+      },
+      select: { carId: true },
+      distinct: ["carId"],
+    }),
+  ]);
+
+  for (const row of [...booked, ...maintenance]) {
+    blocked.add(row.carId);
+  }
+  return blocked;
 };
 
 export interface CarQueryFilters {
@@ -178,6 +323,7 @@ export interface CarQueryFilters {
 
 export const getAllCars = async (filters: CarQueryFilters = {}) => {
   const rateDate = displayRateDate(filters.pickupDate);
+  const stayRange = stayRangeFromFilters(filters);
   const where: Prisma.CarWhereInput = {
     isAvailable: true,
   };
@@ -187,9 +333,7 @@ export const getAllCars = async (filters: CarQueryFilters = {}) => {
   // 1. Filter by vehicle/car type
   const targetCarType = filters.carType || filters.vehicleType;
   if (targetCarType) {
-    const matchedType = Object.values(CarType).find(
-      (type) => type.toLowerCase() === targetCarType.toLowerCase(),
-    );
+    const matchedType = carTypeFromInput(targetCarType);
     if (matchedType) {
       where.carType = matchedType;
     }
@@ -281,44 +425,8 @@ export const getAllCars = async (filters: CarQueryFilters = {}) => {
     });
   }
 
-  // 6. Filter by pickupDate and returnDate (ensures car has no overlapping bookings)
-  if (filters.pickupDate || filters.returnDate) {
-    const pDate = filters.pickupDate ? new Date(filters.pickupDate) : null;
-    const rDate = filters.returnDate
-      ? new Date(filters.returnDate)
-      : pDate;
-
-    if (pDate && !Number.isNaN(pDate.getTime()) && rDate && !Number.isNaN(rDate.getTime())) {
-      andConditions.push({
-        bookings: {
-          none: {
-            pickupDate: { lte: rDate },
-            returnDate: { gte: pDate },
-            OR: [
-              { status: "CONFIRMED" },
-              {
-                status: "PENDING",
-                OR: [
-                  { holdExpiresAt: null },
-                  { holdExpiresAt: { gt: new Date() } },
-                ],
-              },
-            ],
-          },
-        },
-      });
-
-      andConditions.push({
-        carAvailabilities: {
-          none: {
-            status: "MAINTENANCE",
-            pickupDate: { lte: rDate },
-            returnDate: { gte: pDate },
-          },
-        },
-      });
-    }
-  }
+  // 6. Selected dates stay on the car and are marked sold out after the query.
+  const selectedStay = stayRange;
 
   // 7. Filter by driver age (car is eligible if self-drive/no driver assigned OR driver age requirement is met)
   if (filters.age !== undefined && filters.age !== null && filters.age !== "") {
@@ -340,9 +448,7 @@ export const getAllCars = async (filters: CarQueryFilters = {}) => {
 
   // 9. Optional fuelType filter
   if (filters.fuelType) {
-    const matchedFuel = Object.values(FuelType).find(
-      (f) => f.toLowerCase() === filters.fuelType?.toLowerCase(),
-    );
+    const matchedFuel = fuelTypeFromInput(filters.fuelType);
     if (matchedFuel) {
       where.fuelType = matchedFuel;
     }
@@ -411,8 +517,17 @@ export const getAllCars = async (filters: CarQueryFilters = {}) => {
     );
   }
 
+  const blockedIds = await blockedCarIds(
+    listedCars.map((car) => car.id),
+    selectedStay,
+  );
+  const carsForWebsite = listedCars.map((car) => ({
+    ...car,
+    ...publicCarFields(car, blockedIds.has(car.id)),
+  }));
+
   return {
-    cars: listedCars,
+    cars: carsForWebsite,
     pagination: {
       total,
       page,
@@ -446,7 +561,7 @@ export const searchCars = async (filters: CarQueryFilters = {}) => {
 
 export const getCarById = async (
   id: string,
-  filters: Pick<CarQueryFilters, "pickupDate"> = {},
+  filters: Pick<CarQueryFilters, "pickupDate" | "returnDate"> = {},
 ) => {
   const now = new Date();
   const car = await prisma.car.findUnique({
@@ -493,9 +608,14 @@ export const getCarById = async (
     ],
     displayRateDate(filters.pickupDate),
   );
+  const blockedIds = await blockedCarIds(
+    [car.id],
+    stayRangeFromFilters(filters),
+  );
 
   return {
     ...pricedCar,
+    ...publicCarFields(pricedCar, blockedIds.has(car.id)),
     bookedDates: bookings.map((booking) => ({
       status: booking.status,
       pickupDate: booking.pickupDate,
@@ -542,6 +662,11 @@ export const updateCarById = async (id: string, req: Request) => {
     features,
     safetyRatings,
     description,
+    soldOut,
+    suitcases,
+    airConditioning,
+    minimumDriverAge,
+    unlimitedMileage,
   } = rawBody;
 
   // Check plate uniqueness if changing
@@ -599,10 +724,43 @@ export const updateCarById = async (id: string, req: Request) => {
   if (doors !== undefined && !Number.isNaN(Number(doors)))
     updateData.doors = Number(doors);
   if (mileage !== undefined) updateData.mileage = String(mileage).trim();
-  if (fuelType !== undefined) updateData.fuelType = fuelType as FuelType;
+  if (fuelType !== undefined) {
+    const parsedFuelType = fuelTypeFromInput(fuelType);
+    if (!parsedFuelType) {
+      throw new AppError(400, "fuelType is not a valid fuel type");
+    }
+    updateData.fuelType = parsedFuelType;
+  }
   if (transmission !== undefined)
     updateData.transmission = transmission as TransmissionType;
-  if (carType !== undefined) updateData.carType = carType as CarType;
+  if (carType !== undefined) {
+    const parsedCarType = carTypeFromInput(carType);
+    if (!parsedCarType) {
+      throw new AppError(400, "carType is not a valid vehicle category");
+    }
+    updateData.carType = parsedCarType;
+  }
+  const parsedSuitcases = parseWholeNumber(suitcases);
+  const parsedMinimumAge = parseWholeNumber(minimumDriverAge);
+  if (parsedSuitcases !== undefined) {
+    if (parsedSuitcases < 0 || parsedSuitcases > 20) {
+      throw new AppError(400, "suitcases must be between 0 and 20");
+    }
+    updateData.suitcases = parsedSuitcases;
+  }
+  if (parsedMinimumAge !== undefined) {
+    if (parsedMinimumAge < 18 || parsedMinimumAge > 99) {
+      throw new AppError(400, "minimumDriverAge must be between 18 and 99");
+    }
+    updateData.minimumDriverAge = parsedMinimumAge;
+  }
+  if (parseBoolean(soldOut) !== undefined) updateData.soldOut = parseBoolean(soldOut);
+  if (parseBoolean(airConditioning) !== undefined) {
+    updateData.airConditioning = parseBoolean(airConditioning);
+  }
+  if (parseBoolean(unlimitedMileage) !== undefined) {
+    updateData.unlimitedMileage = parseBoolean(unlimitedMileage);
+  }
   if (updatedImages !== undefined) updateData.images = updatedImages;
   if (videoUrl !== undefined)
     updateData.videoUrl = videoUrl ? String(videoUrl).trim() : null;

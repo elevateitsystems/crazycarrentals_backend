@@ -50,6 +50,7 @@ enum CarType {
     ELECTRIC_CARS
     PREMIUM_SUV
     COMMERCIAL
+    SEVEN_SEATER
 }
 
 enum TransmissionType {
@@ -94,6 +95,12 @@ model Car {
 
     description String
     isAvailable Boolean @default(true)
+    soldOut     Boolean @default(false)
+
+    suitcases        Int     @default(2)
+    airConditioning  Boolean @default(true)
+    minimumDriverAge Int     @default(21)
+    unlimitedMileage Boolean @default(true)
 
     // timestamps
     createdAt DateTime @default(now())
@@ -219,6 +226,7 @@ model Bookings {
 model ExtraService {
     id          String  @id @default(cuid())
     name        String
+    description String  @default("")
     pricePerDay Float
     isActive    Boolean @default(true)
 

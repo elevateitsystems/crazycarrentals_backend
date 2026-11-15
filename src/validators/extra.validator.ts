@@ -7,12 +7,14 @@ const pricePerDaySchema = z
 
 export const createExtraSchema = z.object({
   name: z.string().trim().min(2).max(80),
+  description: z.string().trim().max(1000).optional().default(""),
   pricePerDay: pricePerDaySchema,
 });
 
 export const updateExtraSchema = z
   .object({
     name: z.string().trim().min(2).max(80).optional(),
+    description: z.string().trim().max(1000).optional(),
     pricePerDay: pricePerDaySchema.optional(),
     isActive: z.boolean().optional(),
   })

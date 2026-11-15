@@ -3,11 +3,13 @@ import type { BookingStatus, Prisma } from "@prisma/client";
 import type Stripe from "stripe";
 import { prisma } from "../config/prisma.js";
 import { formatPublicDriverInfo } from "./driver.service.js";
+import { publicCarFields, PAY_NOW_DISCOUNT_PERCENT, reservationTimeSlots, TERMS_ACKNOWLEDGEMENT, COMPANY_ABN } from "./car-presentation.js";
 import {
   groupVehicleRateLines,
   quoteVehicleStay,
   readVehicleDailyRates,
 } from "./car-rate.service.js";
+import { sendBookingEmails, type BookingNotice } from "./email.service.js";
 import {
   cancelOpenCardPayment,
   constructStripeEvent,
@@ -44,6 +46,7 @@ export interface CreateBookingInput {
     phoneNumber: string;
   };
   airportShuttle?: boolean;
+  acceptedTerms?: boolean;
   payment: {
     paymentOption: "PAY_NOW" | "PAY_AT_DESK";
     paymentMethod?: string;
@@ -64,10 +67,51 @@ export interface CreateBookingInput {
 }
 
 const AIRPORT_SHUTTLE_FLAT_FEE = 30;
-const PAY_NOW_DISCOUNT_PERCENT = 9;
 
 const payNowDiscountOnVehicle = (vehicleBase: number) =>
   Number(((vehicleBase * PAY_NOW_DISCOUNT_PERCENT) / 100).toFixed(2));
+
+const notifyBooking = (bookingId: string, kind: BookingNotice, refundNote?: string) => {
+  void (async () => {
+    const booking = await prisma.bookings.findUnique({
+      where: { id: bookingId },
+      include: {
+        car: { select: { brand: true, model: true } },
+        bookingPersonDetails: true,
+        user: { select: { name: true, email: true } },
+      },
+    });
+    if (!booking) return;
+
+    const person = booking.bookingPersonDetails[0];
+    const when = (date: Date, time: string) => {
+      const day = date.toLocaleDateString("en-AU", {
+        timeZone: "Australia/Hobart",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      });
+      return `${day} at ${time}`;
+    };
+
+    await sendBookingEmails({
+      kind,
+      reference: booking.bookingReference ?? booking.id,
+      customerName: person
+        ? `${person.firstName} ${person.lastName}`.trim()
+        : booking.user.name,
+      customerEmail: person?.email || booking.user.email,
+      vehicle: booking.car ? `${booking.car.brand} ${booking.car.model}` : "Vehicle",
+      pickup: `${when(booking.pickupDate, booking.pickupTime)}, ${booking.pickupLocation}`,
+      returnAt: `${when(booking.returnDate, booking.returnTime)}, ${booking.returnLocation}`,
+      total: new Intl.NumberFormat("en-AU", {
+        style: "currency",
+        currency: "AUD",
+      }).format(booking.totalPrice),
+      refundNote,
+    });
+  })();
+};
 const PAYMENT_HOLD_MINUTES = 30;
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -270,6 +314,7 @@ export const getAvailableExtras = async () => {
       select: {
         id: true,
         name: true,
+        description: true,
         pricePerDay: true,
         createdAt: true,
         updatedAt: true,
@@ -287,6 +332,7 @@ export const getAvailableExtras = async () => {
       ...protections.map((protection) => ({
         id: protection.id,
         name: protection.name,
+        description: "",
         pricePerDay: protection.pricePerDay,
         createdAt: protection.createdAt,
         updatedAt: protection.updatedAt,
@@ -314,6 +360,13 @@ export const getAvailableExtras = async () => {
     discounts: {
       payNowDiscountPercent: PAY_NOW_DISCOUNT_PERCENT,
       description: "Save 9% on the vehicle rate when you Pay Now",
+    },
+    timeSlots: reservationTimeSlots(),
+    terms: {
+      acknowledgement: TERMS_ACKNOWLEDGEMENT,
+    },
+    company: {
+      abn: COMPANY_ABN,
     },
   };
 };
@@ -361,7 +414,10 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
   });
 
   const isAvailable =
-    car.isAvailable && Boolean(car.driverInfo) && conflictingBookings.length === 0;
+    car.isAvailable &&
+    !car.soldOut &&
+    Boolean(car.driverInfo) &&
+    conflictingBookings.length === 0;
 
   const selected = await loadSelectedAddOns(prisma, input.extraServiceIds);
   const selectedExtrasBreakdown = priceAddOns(selected.extras, rentalDays);
@@ -425,16 +481,19 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
       totalSeat: car.totalSeat,
       pricePerDay: car.pricePerDay,
       images: car.images,
+      ...publicCarFields(car, conflictingBookings.length > 0),
     },
     driverInfo: formatPublicDriverInfo(car.driverInfo),
     isAvailable,
     unavailableReason: isAvailable
       ? null
-      : !car.driverInfo
-        ? "This car does not have an assigned driver"
-        : conflictingBookings.length > 0
-          ? "This car is already booked for the selected dates"
-          : "This car is not available",
+      : car.soldOut
+        ? "This vehicle is sold out"
+        : !car.driverInfo
+          ? "This car does not have an assigned driver"
+          : conflictingBookings.length > 0
+            ? "This car is already booked for the selected dates"
+            : "This car is not available",
     rentalDetails: {
       pickupDate: pDate.toISOString(),
       pickupTime: input.pickupTime || "10:00",
@@ -468,6 +527,10 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
 
 // 3. Create Booking (atomic full transaction)
 export const createBooking = async (input: CreateBookingInput, authenticatedUserId?: string) => {
+  if (input.acceptedTerms === false) {
+    throw new Error("Please agree to the Terms and Conditions");
+  }
+
   const pDate = new Date(input.pickupDate);
   const rDate = new Date(input.returnDate);
 
@@ -499,8 +562,12 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
       throw new Error("Selected car does not exist");
     }
 
-    if (!car.isAvailable) {
-      throw new Error("Selected car is currently not available for rent");
+    if (!car.isAvailable || car.soldOut) {
+      throw new Error(
+        car.soldOut
+          ? "This vehicle is sold out"
+          : "Selected car is currently not available for rent",
+      );
     }
 
     if (!car.driverInfo) {
@@ -698,6 +765,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
 
   const presented = presentBooking(created);
   if (input.payment.paymentOption !== "PAY_NOW") {
+    notifyBooking(created.id, "desk_confirmed");
     return presented;
   }
 
@@ -715,6 +783,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
     });
 
     const payments = Array.isArray(presented.payments) ? presented.payments : [];
+    notifyBooking(created.id, "reserved");
 
     return {
       ...presented,
@@ -992,14 +1061,14 @@ const activatePaidBooking = async (
   bookingId: string,
   card: { cardLast4: string | null; cardBrand: string | null; paymentIntentId: string },
 ) => {
-  await prisma.$transaction(async (tx) => {
+  const activated = await prisma.$transaction(async (tx) => {
     const current = await tx.bookings.findUnique({
       where: { id: bookingId },
       include: { payments: true },
     });
 
     if (!current || current.status === "CONFIRMED" || current.status === "COMPLETED") {
-      return;
+      return false;
     }
 
     if (current.status !== "PENDING") {
@@ -1024,7 +1093,11 @@ const activatePaidBooking = async (
         },
       });
     }
+
+    return true;
   });
+
+  if (activated) notifyBooking(bookingId, "paid");
 };
 
 // 6. Activate a Pay Now booking after payment succeeds
@@ -1099,6 +1172,7 @@ export const confirmBookingPayment = async (
   } catch (error) {
     if (booking.holdExpiresAt && booking.holdExpiresAt < new Date()) {
       await abandonUnpaidBooking(booking.id);
+      notifyBooking(booking.id, "expired");
       throw new Error("Payment window expired. Please start the booking again.");
     }
     throw error;
@@ -1152,6 +1226,7 @@ const applyRefundEvent = async (event: Stripe.Event) => {
     data: { status: "CANCELLED", holdExpiresAt: null },
   });
   await releaseBookedWindow(prisma, payment.booking);
+  notifyBooking(payment.bookingId, "refunded");
 };
 
 export const handleStripeWebhook = async (rawBody: Buffer, signature: string) => {
@@ -1198,14 +1273,17 @@ export const handleStripeWebhook = async (rawBody: Buffer, signature: string) =>
   if (event.type === "payment_intent.payment_failed") {
     const intent = paymentIntentFromEvent(event);
     // A declined card stays unpaid: booking PENDING, payment PENDING.
-    await prisma.payment.updateMany({
+    const payment = await prisma.payment.findFirst({
       where: {
         stripePaymentIntentId: intent.id,
         status: { notIn: ["COMPLETED", "REFUNDED", "EXPIRED"] },
         booking: { status: "PENDING" },
       },
-      data: { status: "PENDING" },
+      select: { bookingId: true },
     });
+    if (!payment) return;
+
+    notifyBooking(payment.bookingId, "payment_failed");
   }
 };
 
@@ -1269,7 +1347,7 @@ export const cancelBooking = async (
     }
   }
 
-  return await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     // Update booking status
     const updatedBooking = await tx.bookings.update({
       where: { id: booking.id },
@@ -1336,6 +1414,9 @@ export const cancelBooking = async (
       },
     };
   });
+
+  notifyBooking(booking.id, "cancelled", result.cancellation.refundStatus);
+  return result;
 };
 
 const adminBookingListSelect = {
@@ -1470,6 +1551,7 @@ export const completeBooking = async (idOrRef: string) => {
     await releaseBookedWindow(tx, booking);
   });
 
+  notifyBooking(booking.id, "completed");
   return getBookingDetails(booking.id);
 };
 

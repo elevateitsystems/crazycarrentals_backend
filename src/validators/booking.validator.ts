@@ -33,6 +33,7 @@ export const createBookingSchema = z.object({
     phoneNumber: z.string().min(4, "Phone number is required"),
   }),
   airportShuttle: z.boolean().optional().default(false),
+  acceptedTerms: z.boolean().optional(),
 
   // Step 4 shows the driver already assigned to the car. Do not send a licence.
 
