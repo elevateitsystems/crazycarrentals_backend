@@ -4,6 +4,7 @@ import type { SignOptions } from "jsonwebtoken";
 import { prisma } from "../config/prisma.js";
 import { env } from "../config/env.js";
 import { AppError } from "../utils/app-error.js";
+import { sendPasswordResetEmail } from "./email.service.js";
 import { uploadFileToMinio, deleteFileFromMinio } from "./minio.service.js";
 import type { Role, Prisma } from "@prisma/client";
 import type {
@@ -101,10 +102,19 @@ export const forgetPassword = async (input: ForgetPasswordInput) => {
     },
   });
 
+  const sent = await sendPasswordResetEmail({
+    email: user.email,
+    name: user.name,
+    otp: createOTP,
+  });
+
+  if (!sent) {
+    throw new AppError(503, "The reset code could not be emailed. Try again shortly.");
+  }
+
   return {
     id: user.id,
     email: user.email,
-    otp: createOTP,
   };
 };
 

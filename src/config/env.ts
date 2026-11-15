@@ -24,6 +24,16 @@ const envSchema = z.object({
   STRIPE_SECRET_KEY: z.string().min(1),
   STRIPE_WEBHOOK_SECRET: z.string().min(1),
   STRIPE_PUBLISHABLE_KEY: z.string().min(1).optional(),
+
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_SECURE: z
+    .preprocess((val) => val === 'true' || val === true, z.boolean())
+    .default(false),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  BOOKING_NOTIFY_EMAIL: z.string().email().optional(),
 });
 
 export const env = envSchema.parse(process.env);

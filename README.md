@@ -105,6 +105,22 @@ Payment options: `PAY_NOW`, `PAY_AT_DESK`.
 
 The vehicle charge is the price of each selected rental day added together. A day with a calendar rate uses that rate. A day without one uses the car's default `pricePerDay`. Protection and extras are added per rental day, then the $30 shuttle when selected. Pay now takes 9% off the vehicle charge only. Protection, extras, and the shuttle stay at full price. The saved booking total and the card payment both use this amount. GST is included. Bookings already saved keep the discount they were given.
 
+## Email
+
+Booking and password-reset emails are sent with SMTP. Set these in `.env`, then restart the API:
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=info@tasdriverentals.com.au
+SMTP_PASS=the-mailbox-app-password
+SMTP_FROM="TasDrive Rentals <info@tasdriverentals.com.au>"
+BOOKING_NOTIFY_EMAIL=info@tasdriverentals.com.au
+```
+
+The customer and `BOOKING_NOTIFY_EMAIL` both receive a message when a Pay Now booking is held, a pay-at-desk booking is confirmed, a card payment succeeds, a card payment fails, a payment hold expires, a booking is cancelled, a card payment is refunded, or a rental is marked complete. The password reset code is emailed and is not returned by the API. If SMTP is not configured, booking emails are skipped and password reset returns an error.
+
 ## API
 
 ### Health and home
@@ -145,7 +161,7 @@ The vehicle charge is the price of each selected rental day added together. A da
 | `GET` | `/:id/daily-rates?from=YYYY-MM-DD&to=YYYY-MM-DD` | Admin |
 | `PUT` | `/:id/daily-rates` | Admin |
 
-`pricePerDay` stored on the car is the default rate. The public car list, search, and car page replace `pricePerDay` with that date's calendar rate before responding. With no `pickupDate`, the date is today in Tasmania. A search that sends `pickupDate` uses that date. The stored default is also returned as `basePricePerDay`. The website keeps reading `pricePerDay` and does not call the daily-rates API. Booking totals add the calendar rate for each rental day, and days without a saved rate use the default.
+`pricePerDay` stored on the car is the default rate. The public car list, search, and car page replace `pricePerDay` with that date's calendar rate before responding. With no `pickupDate`, the date is today in Tasmania. A search that sends `pickupDate` uses that date. The stored default is also returned as `basePricePerDay`. Each car also returns `displayName` (`brand model or similar`), `payNowDiscountPercent`, and `publicDetails` for seats, doors, suitcases, transmission, mileage, air conditioning, minimum age, and standard cover. `soldOut` is true when an admin marks the vehicle sold out, or when a search date range is already booked. A sold-out vehicle stays on the list and cannot be booked. Set it with `soldOut` on add or update. Vehicle categories include `SUVs`, `SEVEN_SEATER` (`7-seater`), and the existing types. Fuel types include `HYBRID`.
 
 Set a stretch of dates, then override single days. A `null` price removes that day's custom rate.
 
@@ -237,13 +253,13 @@ Admin manages the add-ons shown by `GET /api/bookings/extras`. All of these rout
 
 | Method | Path | Body |
 |--------|------|------|
-| `POST` | `/add` | `{ "name": "Child Seat", "pricePerDay": 8 }` |
+| `POST` | `/add` | `{ "name": "Child Seat", "description": "Fits children from 6 months", "pricePerDay": 8 }` |
 | `GET` | `/all` |  |
 | `GET` | `/:id` |  |
-| `PATCH` | `/update/:id` | Any of `name`, `pricePerDay`, `isActive` |
+| `PATCH` | `/update/:id` | Any of `name`, `description`, `pricePerDay`, `isActive` |
 | `DELETE` | `/delete/:id` |  |
 
-Deleting an extra that is already on a booking hides it from new bookings and keeps it on the old booking. An extra that has never been booked is removed. Set `isActive` to `true` to show a hidden extra again. Changing `pricePerDay` changes that extra's line on older bookings too. The booking total saved at checkout stays the same.
+Deleting an extra that is already on a booking hides it from new bookings and keeps it on the old booking. An extra that has never been booked is removed. Set `isActive` to `true` to show a hidden extra again. Changing `pricePerDay` changes that extra's line on older bookings too. The booking total saved at checkout stays the same. `description` can be up to 1000 characters. The name stays the short title, up to 80 characters.
 
 ### Protections — `/api/admin/protections`
 

@@ -16,6 +16,7 @@ const roundMoney = (value: number) => Number(value.toFixed(2));
 const toAdminExtra = (extra: {
   id: string;
   name: string;
+  description: string;
   pricePerDay: number;
   isActive: boolean;
   createdAt: Date;
@@ -24,6 +25,7 @@ const toAdminExtra = (extra: {
 }) => ({
   id: extra.id,
   name: extra.name,
+  description: extra.description,
   pricePerDay: extra.pricePerDay,
   isActive: extra.isActive,
   bookingsCount: extra._count.bookings,
@@ -51,6 +53,7 @@ export const createExtra = async (input: CreateExtraInput) => {
   const extra = await prisma.extraService.create({
     data: {
       name: input.name,
+      description: input.description,
       pricePerDay: roundMoney(input.pricePerDay),
     },
     include: extraInclude,
@@ -99,6 +102,7 @@ export const updateExtra = async (id: string, input: UpdateExtraInput) => {
     where: { id },
     data: {
       ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
       ...(input.pricePerDay !== undefined
         ? { pricePerDay: roundMoney(input.pricePerDay) }
         : {}),
