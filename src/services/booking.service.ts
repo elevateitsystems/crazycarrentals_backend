@@ -2,8 +2,9 @@ import bcrypt from "bcryptjs";
 import type { BookingStatus, Prisma } from "@prisma/client";
 import type Stripe from "stripe";
 import { prisma } from "../config/prisma.js";
+import { env } from "../config/env.js";
 import { formatPublicDriverInfo } from "./driver.service.js";
-import { publicCarFields, PAY_NOW_DISCOUNT_PERCENT, reservationTimeSlots, TERMS_ACKNOWLEDGEMENT, COMPANY_ABN } from "./car-presentation.js";
+import { publicCarFields, PAY_NOW_DISCOUNT_PERCENT, pickupTimeSlots, returnTimeSlots, TERMS_ACKNOWLEDGEMENT, COMPANY_ABN } from "./car-presentation.js";
 import {
   groupVehicleRateLines,
   quoteVehicleStay,
@@ -66,7 +67,8 @@ export interface CreateBookingInput {
   };
 }
 
-const AIRPORT_SHUTTLE_FLAT_FEE = 30;
+const AIRPORT_TRANSFER_NAME = () => env.AIRPORT_TRANSFER_NAME;
+const AIRPORT_TRANSFER_PRICE = () => env.AIRPORT_TRANSFER_PRICE;
 
 const payNowDiscountOnVehicle = (vehicleBase: number) =>
   Number(((vehicleBase * PAY_NOW_DISCOUNT_PERCENT) / 100).toFixed(2));
@@ -193,7 +195,7 @@ const buildOrderSummary = (booking: {
 
   for (const shuttle of booking.airportShuttles ?? []) {
     if (shuttle.shuttleService) {
-      lines.push({ label: "Airport Shuttle", amount: shuttle.price });
+      lines.push({ label: AIRPORT_TRANSFER_NAME(), amount: shuttle.price });
     }
   }
 
@@ -352,16 +354,18 @@ export const getAvailableExtras = async () => {
       bondDebit: protection.bondDebit,
     })),
     airportShuttle: {
-      name: "Airport Shuttle",
-      price: AIRPORT_SHUTTLE_FLAT_FEE,
+      name: AIRPORT_TRANSFER_NAME(),
+      price: AIRPORT_TRANSFER_PRICE(),
       type: "FLAT_FEE",
-      description: "Convenient airport shuttle transfer",
+      description: "Launceston Airport pickup and drop-off transfer",
     },
     discounts: {
       payNowDiscountPercent: PAY_NOW_DISCOUNT_PERCENT,
       description: "Save 9% on the vehicle rate when you Pay Now",
     },
-    timeSlots: reservationTimeSlots(),
+    timeSlots: pickupTimeSlots(),
+    pickupTimeSlots: pickupTimeSlots(),
+    returnTimeSlots: returnTimeSlots(),
     terms: {
       acknowledgement: TERMS_ACKNOWLEDGEMENT,
     },
@@ -440,7 +444,7 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
     input.pickupDate,
     rentalDays,
   );
-  const shuttlePrice = input.airportShuttle ? AIRPORT_SHUTTLE_FLAT_FEE : 0;
+  const shuttlePrice = input.airportShuttle ? AIRPORT_TRANSFER_PRICE() : 0;
   const baseCarPrice = vehicleQuote.total;
   const subtotal = Number(
     (baseCarPrice + extrasTotal + protectionTotal + shuttlePrice).toFixed(2),
@@ -464,7 +468,7 @@ export const estimateBookingPrice = async (input: EstimateBookingInput) => {
       amount: extra.total,
     })),
     ...(shuttlePrice > 0
-      ? [{ label: "Airport Shuttle", amount: shuttlePrice }]
+      ? [{ label: AIRPORT_TRANSFER_NAME(), amount: shuttlePrice }]
       : []),
     ...(discount > 0 ? [{ label: "Pay Now Discount", amount: -discount }] : []),
   ];
@@ -639,7 +643,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
       input.pickupDate,
       rentalDays,
     );
-    const shuttlePrice = input.airportShuttle ? AIRPORT_SHUTTLE_FLAT_FEE : 0;
+    const shuttlePrice = input.airportShuttle ? AIRPORT_TRANSFER_PRICE() : 0;
     const baseCarPrice = vehicleQuote.total;
     const subtotal = Number(
       (baseCarPrice + extrasTotal + protectionTotal + shuttlePrice).toFixed(2),
@@ -703,7 +707,7 @@ export const createBooking = async (input: CreateBookingInput, authenticatedUser
         data: {
           bookingId: booking.id,
           shuttleService: true,
-          price: AIRPORT_SHUTTLE_FLAT_FEE,
+          price: AIRPORT_TRANSFER_PRICE(),
         },
       });
     }
