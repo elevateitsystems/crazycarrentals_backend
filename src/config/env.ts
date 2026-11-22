@@ -1,4 +1,3 @@
-
 import 'dotenv/config';
 import { z } from 'zod';
 
@@ -24,6 +23,9 @@ const envSchema = z.object({
   STRIPE_SECRET_KEY: z.string().min(1),
   STRIPE_WEBHOOK_SECRET: z.string().min(1),
   STRIPE_PUBLISHABLE_KEY: z.string().min(1).optional(),
+
+  AIRPORT_TRANSFER_NAME: z.string().default('Launceston Airport Transfers'),
+  AIRPORT_TRANSFER_PRICE: z.coerce.number().nonnegative().default(30),
 
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().positive().default(587),

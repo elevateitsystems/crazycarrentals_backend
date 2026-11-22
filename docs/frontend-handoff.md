@@ -47,9 +47,13 @@ Vehicle categories the admin can save include `SUVs`, `SEVEN_SEATER` (`7-seater`
 
 ## Reservation times
 
-`GET /api/bookings/extras` returns `timeSlots`.
+`GET /api/bookings/extras` returns `pickupTimeSlots`, `returnTimeSlots`, and the legacy `timeSlots` field.
 
-Use that list for both pickup time and return time, in the order given. It runs from `08:00` to `20:00` in 15-minute steps: `08:00`, `08:15`, `08:30`, `08:45`, `09:00`, and so on.
+Use `pickupTimeSlots` for pickup: from `08:00` to `22:00`, every 15 minutes.
+
+Use `returnTimeSlots` for return: from `00:00` to `23:45`, every 15 minutes, to support after-hours returns.
+
+`timeSlots` remains available for backward compatibility and contains the pickup list.
 
 Send the chosen value as `pickupTime` and `returnTime`.
 
@@ -80,11 +84,13 @@ Call `POST /api/bookings/estimate` again whenever the dates, extras, protection,
 
 `extraServiceIds` holds the protection id and the extra ids together.
 
+For airport transfers, read `data.airportShuttle.name` and `data.airportShuttle.price` from `GET /api/bookings/extras`. Do not retain the old `Complimentary Airport Transfers`, `Airport Shuttle`, or fixed-$30 text.
+
 Render the sidebar from `pricing.summary` and the amount due from `pricing.totalPrice`.
 
 Do not multiply `dailyCarRate` or `pricePerDay` by `rentalDays`. Days can have different calendar rates. `pricing.dailyRates` is the price of each selected date, and `pricing.baseCarPrice` is their sum.
 
-The 9% discount applies to the vehicle total only. Protection, extras, and the $30 shuttle stay at full price. `pricing.discount` is that vehicle discount. `pricing.payNowTotal` and `pricing.payAtDeskTotal` are both returned. Pay at Desk has no discount.
+The 9% discount applies to the vehicle total only. Protection, extras, and the configured airport transfer stay at full price. `pricing.discount` is that vehicle discount. `pricing.payNowTotal` and `pricing.payAtDeskTotal` are both returned. Pay at Desk has no discount.
 
 If `isAvailable` is false, stop and show `unavailableReason`.
 
