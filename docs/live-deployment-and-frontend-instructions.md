@@ -394,7 +394,55 @@ An optional body may contain:
 
 The frontend should handle the API's cancellation, refund, and already-completed responses.
 
-## 13. Error handling
+## 13. Pay Now, Pay at Desk, and Stripe responses
+
+The create response uses this shape:
+
+```json
+{
+  "success": true,
+  "message": "Booking saved. Complete payment to activate it.",
+  "data": {
+    "id": "BOOKING_ID",
+    "bookingReference": "CCR-XXXX-XXXX",
+    "isActive": false,
+    "clientSecret": "pi_secret_...",
+    "totalPrice": 202.9,
+    "status": "PENDING"
+  }
+}
+```
+
+For `PAY_NOW`:
+
+- Show the booking as held, not confirmed
+- Read `data.clientSecret` from the create response
+- Confirm the card with Stripe.js
+- Call `POST /api/bookings/:id/confirm-payment`
+- Wait for the backend response before showing confirmed
+- The frontend must not rely only on Stripe.js success
+
+For `PAY_AT_DESK`:
+
+- The create response is confirmed immediately
+- `data.isActive` should be `true`
+- Payment remains pending for collection at the desk
+- Do not create or confirm a Stripe card payment
+
+After Pay Now card confirmation, use the backend response's `data.status` and `data.isActive` values. A successful frontend card confirmation can still require the backend confirmation or webhook to complete activation.
+
+## 14. Booking status and cancellation rules
+
+Handle these booking statuses:
+
+- `PENDING`: Pay Now hold awaiting payment
+- `CONFIRMED`: booking active and confirmed
+- `COMPLETED`: rental completed
+- `CANCELLED`: booking cancelled
+
+Do not allow cancellation UI for `COMPLETED` or `CANCELLED` bookings. A cancelled booking should immediately release vehicle availability.
+
+## 15. Error handling
 
 For API failures:
 
@@ -407,7 +455,7 @@ For API failures:
 
 Display `response.message` to the customer where appropriate. Do not expose stack traces or server secrets.
 
-## 14. Final frontend QA checklist
+## 16. Final frontend QA checklist
 
 - Pickup options begin at 08:00 and end at 22:00
 - Return options cover 00:00 through 23:45
